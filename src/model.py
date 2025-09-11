@@ -13,6 +13,7 @@ from typing import Dict, List, Optional, Tuple, Union
 from transformers import AutoTokenizer
 import math
 import logging
+from fiber_fusion import FIBERCrossModalFusion, create_fiber_fusion
 
 logger = logging.getLogger(__name__)
 
@@ -970,91 +971,6 @@ class EpisodicMemory(nn.Module):
 
         logger.info("🔄 External storage disabled, using integrated mode")
 
-    # ...existing code for other methods...
-class CrossModalFusion(nn.Module):
-    """Cross-modal fusion module for text and vision features"""
-
-    def __init__(
-        self,
-        text_dim: int,
-        vision_dim: int,
-        hidden_dim: int,
-        num_heads: int = 8,
-        num_layers: int = 2
-    ):
-        super().__init__()
-        self.text_dim = text_dim
-        self.vision_dim = vision_dim
-        self.hidden_dim = hidden_dim
-
-        # Projection layers
-        self.text_proj = BitNetLinear(text_dim, hidden_dim)
-        self.vision_proj = BitNetLinear(vision_dim, hidden_dim)
-
-        # Cross-attention layers
-        self.cross_attention_layers = nn.ModuleList([
-            BitNetAttention(
-                dim=hidden_dim,
-                num_heads=num_heads
-            ) for _ in range(num_layers)
-        ])
-
-        # Layer normalization
-        self.layer_norms = nn.ModuleList([
-            nn.LayerNorm(hidden_dim) for _ in range(num_layers)
-        ])
-
-        # Output projection
-        self.output_proj = BitNetLinear(hidden_dim, hidden_dim)
-
-    def forward(
-        self,
-        text_features: torch.Tensor,
-        vision_features: torch.Tensor
-    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
-        """
-        Args:
-            text_features: [batch_size, seq_len, text_dim]
-            vision_features: [batch_size, vision_dim]
-
-        Returns:
-            fused_features: [batch_size, seq_len, hidden_dim]
-            attention_weights: Dict of attention patterns
-        """
-        batch_size, seq_len = text_features.shape[:2]
-
-        # Validate input dimensions
-        if text_features.size(-1) != self.text_dim:
-            raise ValueError(f"Text features dimension {text_features.size(-1)} doesn't match expected {self.text_dim}")
-        if vision_features.size(-1) != self.vision_dim:
-            raise ValueError(f"Vision features dimension {vision_features.size(-1)} doesn't match expected {self.vision_dim}")
-
-        # Project to common dimension
-        # [batch_size, seq_len, hidden_dim]
-        text_proj = self.text_proj(text_features)
-        vision_proj = self.vision_proj(vision_features).unsqueeze(1)  # [batch_size, 1, hidden_dim]
-
-        # Cross-attention fusion
-        fused = text_proj
-        attention_weights = {}
-
-        for i, (attn_layer, norm_layer) in enumerate(zip(self.cross_attention_layers, self.layer_norms)):
-            # Text-to-vision cross-attention
-            attn_output, attn_weights = attn_layer(
-                query=fused,
-                key=vision_proj,
-                value=vision_proj
-            )
-
-            # Residual connection and normalization
-            fused = norm_layer(fused + attn_output)
-            attention_weights[f'layer_{i}'] = attn_weights
-
-        # Output projection
-        output = self.output_proj(fused)
-
-        return output, attention_weights
-
 
 class VisionEncoder(nn.Module):
     """Quantized Vision Encoder for DiNOv2 features"""
@@ -1171,13 +1087,14 @@ class BitMarModel(nn.Module):
             output_dim=config['vision_latent_size']
         )
 
-        # Cross-modal fusion with BitNet
-        self.fusion = CrossModalFusion(
+        # Cross-modal fusion with FIBER-inspired architecture
+        self.fusion = FIBERCrossModalFusion(
             text_dim=config['text_encoder_dim'],
             vision_dim=config['vision_latent_size'],
-            hidden_dim=config['fusion_hidden_size'],
             num_heads=config['fusion_num_heads'],
-            num_layers=config['fusion_num_layers']
+            num_layers=config['fusion_num_layers'],
+            hidden_dim=config.get('fusion_hidden_size', 512),
+            dropout=config.get('dropout', 0.1)
         )
 
         # Episodic memory with BitNet quantization
@@ -1441,8 +1358,19 @@ class BitMarModel(nn.Module):
         vision_mask = has_vision.float().unsqueeze(-1)  # [batch_size, 1]
         vision_latent_masked = vision_latent * vision_mask
 
-        # Cross-modal fusion (will handle masked vision features)
-        fused_features, cross_attention = self.fusion(text_features, vision_latent_masked)
+        # Cross-modal fusion with FIBER-inspired architecture
+        fusion_result = self.fusion(
+            vision_features=vision_latent_masked,
+            text_features=text_features,
+            text_mask=attention_mask
+        )
+        
+        # Extract fused features (use text features as main sequence output)
+        fused_features = fusion_result['text_features']
+        cross_attention = {
+            'attention_weights': fusion_result['attention_weights'],
+            'cross_modal_similarity': fusion_result['cross_modal_similarity']
+        }
 
         # Update adaptive controller with cross-modal similarity if available
         if mode == "train" and adaptive_controller is not None and has_vision.any():

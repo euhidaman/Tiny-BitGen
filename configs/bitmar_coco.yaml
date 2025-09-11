@@ -22,10 +22,16 @@ model:
   vision_spatial_pooling: true # 14x14 -> 7x7 spatial reduction
   vision_pool_size: 2 # 2x2 pooling
 
-  # Cross-modal fusion (Balanced for COCO)
+  # Cross-modal fusion (FIBER-inspired architecture)
   fusion_hidden_size: 128 # Match text encoder dim for consistency
   fusion_num_heads: 4 # More heads for better alignment
   fusion_num_layers: 2 # Deeper fusion for understanding
+  max_vision_seq_len: 196 # For 14x14 DiNOv2 patches (before pooling)
+  
+  # FIBER fusion specific parameters
+  fusion_attention_temperature: 0.07 # Temperature for attention scaling
+  fusion_use_relative_position: true # Enable relative position encoding
+  fusion_cross_attn_dropout: 0.1 # Dropout for cross-attention layers
 
   # Episodic Memory (Optimized for COCO)
   memory_size: 32 # 32 memory slots for balanced storage
