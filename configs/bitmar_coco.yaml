@@ -1,0 +1,698 @@
+# BitMar COCO Configuration  
+# Training on full COCO dataset without token constraints
+# All advanced features included - no training limits
+
+model:
+  # BitNet Text Encoder (Optimized for COCO)
+  vocab_size: 50257 # GPT-2 vocabulary
+  text_encoder_dim: 128 # Balanced size for efficient training
+  text_encoder_layers: 4 # More layers for better understanding
+  text_encoder_heads: 4 # More heads for cross-modal alignment
+
+  # BitNet Text Decoder (Optimized for generation)
+  text_decoder_dim: 128 # Match encoder dimension
+  text_decoder_layers: 4 # Sufficient for text generation
+  text_decoder_heads: 4 # Balance between quality and efficiency
+
+  # Vision processing (Balanced compression for COCO)
+  vision_encoder_dim: 768 # DiNOv2 input (fixed)
+  vision_latent_size: 128 # Match text encoder dim for consistency
+  vision_hidden_size: 64 # Intermediate processing
+  vision_compression_method: "learned_compression" # Best for cross-modal alignment
+  vision_spatial_pooling: true # 14x14 -> 7x7 spatial reduction
+  vision_pool_size: 2 # 2x2 pooling
+
+  # Cross-modal fusion (Balanced for COCO)
+  fusion_hidden_size: 128 # Match text encoder dim for consistency
+  fusion_num_heads: 4 # More heads for better alignment
+  fusion_num_layers: 2 # Deeper fusion for understanding
+
+  # Episodic Memory (Optimized for COCO)
+  memory_size: 32 # 32 memory slots for balanced storage
+  episode_dim: 128 # Match fusion dimension for consistency
+  memory_alpha: 0.2 # Balanced adaptation rate
+  direct_writing: true
+  memory_compression: true # Enable memory compression
+  enable_adaptive_training: true # Enable adaptive cross-modal training
+
+  # Model configuration
+  max_seq_len: 256 # Balanced sequence length for captions
+  dropout: 0.15 # Moderate dropout for stable training
+
+# NO TOKEN CONSTRAINTS - Use all COCO data
+# No token_constraints section - unlimited training
+
+# Vision feature configuration
+vision_feature_reduction:
+  enabled: true
+  method: "learned_compression" # Best for cross-modal alignment
+  target_dim: 64 # Balanced compression
+  spatial_pooling: true # Reduce spatial dimensions
+  pool_method: "attention" # Attention-based pooling for better features
+
+  # Compression parameters
+  hidden_dim: 128 # Intermediate compression layer
+  learnable: true # Enable learning during training
+  preserve_spatial_info: true # Keep spatial relationships
+
+data:
+  # Dataset configuration (COCO - No constraints)
+  dataset_name: "coco" # Use COCO dataset
+  dataset_dir: "./coco_data" # COCO dataset directory
+  text_encoder_name: "gpt2"
+  max_seq_length: 256 # Balanced sequence length for captions
+
+  # No token counting - use all data
+  count_tokens: false # Disable token counting
+  use_all_data: true # Use entire COCO dataset
+
+  # DataLoader settings (Optimized for COCO training)
+  batch_size: 64 # Increased batch size for faster training
+  num_workers: 6 # Efficient data loading
+  pin_memory: true # Faster GPU transfers
+  persistent_workers: true # Keep workers alive
+
+  # Data processing for COCO
+  shuffle_datasets: true # Shuffle for better training
+  ensure_image_caption_alignment: true # Maintain image-caption pairs
+  support_multi_format: true # Support JPG, PNG, WEBP formats
+
+  # No validation split - use entire dataset for training
+  use_validation: false
+  train_only: true
+
+# Attention analysis (Focused on cross-modal understanding)
+attention_analysis:
+  track_top_k: 5 # Track top 5 attention heads
+  log_every_n_steps: 200 # Regular logging
+  viz_every_n_epochs: 3 # Visualization every 3 epochs
+  save_head_patterns: true # Save patterns for analysis
+  analyze_memory_attention: true # Monitor episodic memory
+  analyze_cross_modal: true # Critical for alignment
+  track_token_alignment: true # Track image-text token alignment
+
+# Adaptive training configuration
+adaptive_training:
+  enabled: true # Enable adaptive training
+  similarity_window_size: 200 # Monitor similarity over 200 steps
+  drop_threshold: 0.12 # Intervention threshold for similarity drop
+  min_steps_between_interventions: 800 # Cooldown between interventions
+  freeze_duration_steps: 1500 # How long to freeze components
+  loss_rebalance_factor: 2.0 # Rebalance cross-modal loss
+  similarity_smoothing_alpha: 0.15 # EMA smoothing for similarity
+
+training:
+  # Training configuration (Unlimited COCO training)
+  max_epochs: 20 # More epochs since no token constraints
+  accumulate_grad_batches: 2 # Efficient gradient accumulation
+  gradient_clip_val: 0.3 # Balanced gradient clipping
+  val_check_interval: 1000 # Regular validation
+  scheduler: "cosine_with_restarts" # Cosine with restarts for better convergence
+  min_lr: 0.00005 # Reasonable minimum learning rate
+  warmup_steps: 1000 # Proper warmup for stability
+  learning_rate: 0.0002 # Balanced learning rate
+  weight_decay: 0.02 # Balanced regularization
+  optimizer: "adamw8bit" # Stable optimizer choice
+
+  # Scheduler configuration
+  scheduler_config:
+    T_0: 1000 # Initial restart period
+    T_mult: 2 # Multiply restart period
+    eta_min_ratio: 0.1 # Minimum LR ratio
+
+  # Training objectives (Enhanced alignment focus)
+  cross_modal_loss_weight: 1.5 # Higher weight for cross-modal alignment
+  text_generation_loss_weight: 1.0 # Standard weight for text generation
+  memory_regularization_weight: 0.1 # Light memory regularization
+  alignment_consistency_weight: 0.5 # Additional loss for alignment consistency
+
+  # No token limits - unlimited training
+  track_token_usage: true # Monitor token consumption for logging only
+  log_token_progress: true # Log token usage progress
+  stop_at_token_limit: false # Never stop at token limit
+
+  # Memory-specific metrics to track
+  track_memory_metrics:
+    - "memory_diversity_score" # How different memory slots are
+    - "memory_specialization_score" # How specialized each slot becomes
+    - "memory_usage_entropy" # Distribution of memory slot usage
+    - "cross_modal_memory_ratio" # Ratio of text-only vs multimodal specialization
+    - "memory_slot_utilization" # Percentage of actively used slots
+    - "memory_update_frequency" # How often memory slots are updated
+    - "memory_retrieval_accuracy" # Accuracy of memory retrievals
+
+# Evaluation (Comprehensive for COCO)
+evaluation:
+  metrics: ["bleu", "rouge", "cross_modal_similarity", "memory_efficiency"]
+  generate_samples: true # Generate example outputs
+  num_samples: 20 # More samples for evaluation
+  max_generation_length: 32 # Reasonable generation length for captions
+  temperature: 0.8 # Balanced creativity
+  top_p: 0.9 # Nucleus sampling
+
+  # Cross-modal evaluation (Enhanced alignment validation)
+  evaluate_alignment: true # Test image-text alignment
+  alignment_metrics:
+    [
+      "cosine_similarity",
+      "retrieval_accuracy",
+      "caption_image_matching",
+      "cross_modal_retrieval",
+    ]
+  alignment_threshold: 0.8 # Minimum alignment score required
+  validate_pairs_during_eval: true # Validate image-caption pairs during evaluation
+
+# Output directories for COCO training
+output:
+  checkpoint_dir: "checkpoints_coco"
+  log_dir: "logs_coco"
+  attention_dir: "attention_coco"
+  memory_dir: "memory_coco"
+  results_dir: "results_coco"
+  token_logs_dir: "token_logs_coco" # Token usage logs
+
+# Memory optimization
+memory_optimization:
+  use_gradient_checkpointing: true # Trade compute for memory
+  use_fp16: true # Mixed precision training
+  use_int8_vision: false # Keep vision in fp16 for quality
+  empty_cache_frequency: 10 # Regular cache cleaning
+  max_memory_slots_in_ram: 16 # Keep 16 slots in RAM
+  compress_episodic_memory: true # Compress memory storage
+
+  # Vision processing optimization
+  vision_feature_caching: false # Don't cache for memory saving
+  vision_batch_processing: true # Process vision features in batches
+
+  # Model optimization
+  tie_word_embeddings: true # Share input/output embeddings
+  use_shared_attention: false # Don't share attention for quality
+
+# Performance targets for COCO
+performance_targets:
+  max_model_size_mb: 50 # 50MB model size
+  target_cross_modal_similarity: 0.75 # Target similarity score
+  target_text_generation_quality: 0.6 # Target BLEU score
+  memory_efficiency_threshold: 0.8 # Memory usage efficiency
+
+# FLOPS tracking configuration
+flops_tracking:
+  enabled: true # Enable FLOPS tracking
+  log_frequency: 100 # Log FLOPS every 100 steps
+  save_statistics: true # Save detailed FLOPS statistics
+  estimate_theoretical: true # Calculate theoretical FLOPS estimates
+  track_peak_performance: true # Track peak throughput
+  log_to_wandb: true # Log FLOPS metrics to Weights & Biases
+
+  # Advanced FLOPS tracking settings
+  detailed_breakdown: true # Track FLOPS by component
+  memory_bandwidth_tracking: false # Advanced memory bandwidth tracking
+  efficiency_analysis: true # Analyze computational efficiency
+
+  # FLOPS logging categories
+  track_components:
+    - "attention" # Self-attention mechanisms
+    - "feedforward" # Feed-forward networks
+    - "layer_norm" # Layer normalization
+    - "embeddings" # Input/output embeddings
+    - "vision_encoder" # Vision encoding operations
+    - "cross_modal_fusion" # Cross-modal fusion operations
+
+# Token tracking (for logging only - no constraints)
+token_tracking:
+  log_frequency: 1000 # Log token usage every 1000 steps
+  save_token_distribution: true # Save token distribution stats
+  monitor_caption_text_ratio: false # No ratio monitoring needed for COCO
+  enforce_token_limits: false # Never enforce limits
+  early_stopping_on_limit: false # Never stop on limits
+
+  # COCO-specific tracking
+  track_dataset_coverage: true # Track how much of COCO dataset used
+  log_image_format_distribution: true # Log JPG/PNG/WEBP distribution
+  save_processing_statistics: true # Save processing statistics
+
+  # FLOPS-token correlation tracking
+  correlate_flops_with_tokens: true # Track FLOPS per token processed
+  log_computational_efficiency: true # Log computational efficiency metrics
+  track_throughput_vs_quality: true # Monitor trade-offs
+
+# Hugging Face Hub integration for model checkpoint saving
+huggingface_hub:
+  enabled: true # Enable automatic uploads to HF Hub
+  repo_id: "euhidaman/bitmar-coco-multimodal" # COCO-specific repo
+  private: true # Keep repo private by default
+  upload_after_epoch: true # Upload checkpoint after each epoch
+  upload_final_model: true # Upload final model at end
+  commit_message_template: "BitMar COCO - Epoch {epoch} - {tokens_processed:,} tokens processed"
+  create_model_card: true # Generate model card automatically
+  model_card_template: |
+    ---
+    language: en
+    license: mit
+    tags:
+    - bitmar
+    - multimodal
+    - coco
+    - cross-modal
+    datasets:
+    - coco
+    metrics:
+    - bleu
+    - cross_modal_similarity
+    ---
+    
+    # BitMar COCO Model
+    
+    This model was trained on the full COCO dataset without token constraints.
+    
+    ## Training Details
+    - Dataset: COCO (unlimited)
+    - Epochs completed: {epoch}
+    - Tokens processed: {tokens_processed:,}
+    - Cross-modal similarity: {best_similarity:.4f}
+    
+    ## Model Architecture
+    - Text encoder: {text_encoder_layers} layers, {text_encoder_dim} hidden size
+    - Vision encoder: DiNOv2 features compressed to {vision_latent_size}
+    - Episodic memory: {memory_size} slots
+    
+    ## Usage
+    ```python
+    from transformers import AutoModel, AutoTokenizer
+    
+    model = AutoModel.from_pretrained("{repo_id}")
+    tokenizer = AutoTokenizer.from_pretrained("{repo_id}")
+    ```
+
+# Attention Sinks configuration for endless fluent generation
+attention_sinks:
+  enabled: true # Enable attention sinks for improved long sequence generation
+  attention_sink_size: 4 # Number of initial tokens to use as attention sinks
+  attention_sink_window_size: 1020 # Size of sliding window for recent tokens
+  inject_to_text_encoder: true # Apply to text encoder
+  inject_to_text_decoder: true # Apply to text decoder
+  position_shift_enabled: true # Enable position shifting for proper handling
+
+  # Advanced attention sinks settings
+  cache_compression: true # Enable KV cache compression
+  adaptive_window_size: false # Experimental: adaptive window sizing
+  memory_efficient_attention: true # Use memory-efficient attention patterns
+
+  # Integration with existing BitMar features
+  preserve_episodic_memory: true # Ensure episodic memory functionality is preserved
+  preserve_quantization: true # Ensure BitNet quantization is preserved
+  preserve_cross_modal_fusion: true # Ensure cross-modal fusion is preserved
+  strict_alignment_validation: false # Disable strict validation (not needed for COCO)
+
+# Vision feature configuration (Enhanced for COCO)
+vision_feature_reduction:
+  enabled: true
+  method: "learned_compression" # Best for cross-modal alignment
+  target_dim: 128 # Higher compression for efficiency
+  spatial_pooling: true # Reduce spatial dimensions
+  pool_method: "attention" # Attention-based pooling for better features
+
+  # Compression parameters
+  hidden_dim: 256 # Intermediate compression layer
+  learnable: true # Enable learning during training
+  preserve_spatial_info: true # Keep spatial relationships
+
+data:
+  # Dataset configuration (COCO)
+  dataset_type: "coco" # Use COCO dataset
+  dataset_dir: "./data" # Data directory
+  tokenizer_name: "gpt2"
+  vision_model_name: "facebook/dinov2-base"
+  max_seq_length: 128 # Shorter for captions
+  use_dummy_vision: false # Use real vision features
+  extract_vision_features: true # Extract features on-the-fly
+  num_workers: 4 # Number of data loading workers
+
+  # Token counting parameters (disabled for COCO)
+  count_tokens: false # Disable precise token counting
+  target_caption_tokens: null # No target
+  target_text_tokens: null # No target
+  token_counting_method: "gpt2" # Use GPT-2 tokenizer for logging
+
+  # DataLoader settings (Optimized for COCO training)
+  batch_size: 32 # Balanced batch size
+  num_workers: 4 # Efficient data loading
+  pin_memory: true # Faster GPU transfers
+  persistent_workers: true # Keep workers alive
+
+  # Data mixing strategy (COCO only)
+  mix_ratio: 1.0 # 100% COCO captions with images
+  shuffle_datasets: true # Shuffle for better mixing
+  ensure_alignment: true # Ensure perfect image-caption alignment
+  validate_alignment: false # Not needed for COCO (already aligned)
+  alignment_verification: "basic" # Basic alignment verification
+  never_break_pairs: true # Never separate image-caption pairs
+  alignment_check_frequency: 1000 # Check alignment every 1000 samples
+
+  # Use validation split from COCO
+  use_validation: true
+  train_only: false
+  validation_split: 0.1 # Use 10% for validation
+
+# Attention analysis (Enhanced for COCO cross-modal understanding)
+attention_analysis:
+  track_top_k: 5 # Track top 5 attention heads
+  log_every_n_steps: 100 # More frequent logging
+  viz_every_n_epochs: 2 # Visualization every 2 epochs
+  save_head_patterns: true # Save patterns for analysis
+  analyze_memory_attention: true # Monitor episodic memory
+  analyze_cross_modal: true # Critical for image-text alignment
+  track_token_alignment: true # Track image-text token alignment
+
+# Adaptive training configuration (Enhanced for COCO)
+adaptive_training:
+  enabled: true # Enable adaptive training
+  similarity_window_size: 200 # Monitor similarity over 200 steps
+  drop_threshold: 0.12 # Intervention threshold for similarity drop
+  min_steps_between_interventions: 500 # Shorter cooldown for COCO
+  freeze_duration_steps: 1000 # How long to freeze components
+  loss_rebalance_factor: 2.0 # Rebalance cross-modal loss
+  similarity_smoothing_alpha: 0.15 # EMA smoothing for similarity
+
+training:
+  # Training configuration (COCO-specific)
+  max_epochs: 10 # Train for more epochs without token constraint
+  accumulate_grad_batches: 1 # No gradient accumulation for now
+  gradient_clip_val: 1.0 # Standard gradient clipping
+  val_check_interval: 1.0 # Check validation every epoch
+  scheduler: "cosine_with_restarts" # Cosine with restarts for better convergence
+  min_lr: 0.00001 # Lower minimum learning rate
+  warmup_steps: 1000 # Proper warmup for stability
+  learning_rate: 3e-4 # Standard learning rate for COCO
+  weight_decay: 0.01 # Balanced regularization
+  optimizer: "adamw" # Standard AdamW optimizer
+
+  # Scheduler configuration
+  scheduler_config:
+    T_0: 1000 # Initial restart period
+    T_mult: 2 # Multiply restart period (must be integer >= 1)
+    eta_min_ratio: 0.01 # Lower minimum LR ratio
+
+  # Enhanced training objectives (Focus on vision-language alignment)
+  cross_modal_loss_weight: 2.0 # Higher weight for cross-modal alignment
+  text_generation_loss_weight: 1.0 # Standard weight for text generation
+  memory_regularization_weight: 0.1 # Light memory regularization
+  alignment_consistency_weight: 0.8 # Strong alignment consistency
+
+  # Token-aware training (logging only for COCO)
+  track_token_usage: true # Monitor token consumption for logging
+  log_token_progress: true # Log token usage progress
+  stop_at_token_limit: false # Never stop - use full dataset
+
+  # Alignment-specific training parameters
+  validate_alignment_every_n_steps: 500 # Validate alignment frequently
+  log_alignment_metrics: true # Log alignment quality metrics
+  alignment_loss_scaling: "adaptive" # Adaptive scaling for alignment loss
+
+# Weights & Biases (Comprehensive logging for COCO training)
+wandb:
+  project: "bitmar-coco-training"
+  entity: null # Set your W&B entity
+  api_key: null
+  log_every_n_steps: 50 # Frequent logging
+  log_attention: true # Monitor attention patterns
+  log_memory: true # Monitor episodic memory
+  log_gradients: true # Monitor gradient flow
+  log_token_usage: true # Track token consumption
+  log_cross_modal_similarity: true # Critical for alignment
+  log_alignment_quality: true # Track alignment quality metrics
+  log_caption_image_matching: true # Track caption-image matching accuracy
+  save_code: true
+  create_plots: true
+  plot_attention_heatmaps: true
+  plot_memory_usage: true
+  plot_token_distribution: true # Track token usage distribution
+  plot_alignment_metrics: true # Track alignment quality over time
+
+  # Enhanced Memory Visualization Settings
+  log_memory_evolution: true # Track memory slot evolution over time
+  plot_memory_evolution_heatmap: true # Memory slot evolution heatmaps
+  plot_memory_diversity: true # Track memory diversity and specialization
+  plot_memory_access_patterns: true # Visualize memory access patterns
+  memory_visualization_frequency: 1000 # Log memory visualizations every 1000 steps
+  memory_snapshot_frequency: 2000 # Take memory snapshots every 2000 steps
+
+  # Memory-specific metrics to track
+  track_memory_metrics:
+    - "memory_diversity_score" # How different memory slots are
+    - "memory_specialization_score" # How specialized each slot becomes
+    - "memory_usage_entropy" # Distribution of memory slot usage
+    - "cross_modal_memory_ratio" # Ratio of text-only vs multimodal specialization
+    - "memory_slot_utilization" # Percentage of actively used slots
+    - "memory_update_frequency" # How often memory slots are updated
+    - "memory_retrieval_accuracy" # Accuracy of memory retrievals
+
+# Evaluation (Comprehensive for COCO)
+evaluation:
+  metrics: ["bleu", "rouge", "cross_modal_similarity", "memory_efficiency", "cider", "meteor"]
+  generate_samples: true # Generate example outputs
+  num_samples: 50 # More samples for evaluation
+  max_generation_length: 64 # Longer generation for detailed captions
+  temperature: 0.8 # Balanced creativity
+  top_p: 0.9 # Nucleus sampling
+
+  # Cross-modal evaluation (Enhanced for COCO)
+  evaluate_alignment: true # Test image-text alignment
+  alignment_metrics:
+    [
+      "cosine_similarity",
+      "retrieval_accuracy",
+      "caption_image_matching",
+      "cross_modal_retrieval",
+      "image_text_similarity",
+      "semantic_consistency"
+    ]
+  alignment_threshold: 0.75 # Alignment score threshold
+  validate_pairs_during_eval: true # Validate image-caption pairs during evaluation
+
+  # COCO-specific evaluation
+  coco_metrics: true # Enable COCO-specific metrics
+  caption_quality_metrics: ["bleu", "cider", "meteor", "rouge", "spice"]
+  image_captioning_eval: true # Evaluate image captioning quality
+
+# Output directories
+output:
+  base_dir: "./outputs"
+  checkpoint_dir: "checkpoints"
+  log_dir: "logs"
+  attention_dir: "attention_analysis"
+  memory_dir: "memory_analysis"
+  results_dir: "results"
+  token_logs_dir: "token_logs" # Token usage logs
+
+# Memory optimization (Enhanced for COCO)
+memory_optimization:
+  use_gradient_checkpointing: true # Trade compute for memory
+  use_fp16: true # Mixed precision training
+  use_int8_vision: false # Keep vision in fp16 for quality
+  empty_cache_frequency: 50 # More frequent cache cleaning
+  max_memory_slots_in_ram: 32 # Keep more slots in RAM for COCO
+  compress_episodic_memory: true # Compress memory storage
+
+  # Vision processing optimization
+  vision_feature_caching: false # Don't cache for memory saving
+  vision_batch_processing: true # Process vision features in batches
+
+  # Model optimization
+  tie_word_embeddings: true # Share input/output embeddings
+  use_shared_attention: false # Don't share attention for quality
+
+# Performance targets for COCO
+performance_targets:
+  max_model_size_mb: 100 # Larger model size allowed for COCO
+  target_cross_modal_similarity: 0.8 # Higher similarity target
+  target_text_generation_quality: 0.7 # Higher BLEU target
+  memory_efficiency_threshold: 0.85 # Higher efficiency target
+  target_cider_score: 0.6 # COCO-specific metric
+  target_meteor_score: 0.3 # COCO-specific metric
+
+# FLOPS tracking configuration (Enhanced)
+flops_tracking:
+  enabled: true # Enable FLOPS tracking
+  log_frequency: 100 # Log FLOPS every 100 steps
+  save_statistics: true # Save detailed FLOPS statistics
+  estimate_theoretical: true # Calculate theoretical FLOPS estimates
+  track_peak_performance: true # Track peak throughput
+  log_to_wandb: true # Log FLOPS metrics to Weights & Biases
+
+  # Advanced FLOPS tracking settings
+  detailed_breakdown: true # Track FLOPS by component
+  memory_bandwidth_tracking: false # Advanced memory bandwidth tracking
+  efficiency_analysis: true # Analyze computational efficiency
+
+  # FLOPS logging categories
+  track_components:
+    - "attention" # Self-attention mechanisms
+    - "feedforward" # Feed-forward networks
+    - "layer_norm" # Layer normalization
+    - "embeddings" # Input/output embeddings
+    - "vision_encoder" # Vision encoding operations
+    - "cross_modal_fusion" # Cross-modal fusion operations
+
+# Token tracking (Modified for COCO)
+token_tracking:
+  log_frequency: 500 # More frequent logging
+  save_token_distribution: true # Save token distribution stats
+  monitor_caption_text_ratio: false # Not applicable for COCO
+  enforce_token_limits: false # Never enforce limits
+  early_stopping_on_limit: false # Never stop early
+
+  # Alignment-specific tracking
+  track_alignment_quality: true # Track image-caption alignment quality
+  log_misaligned_samples: false # Not needed for COCO (pre-aligned)
+  alignment_quality_threshold: 0.8 # Higher threshold for COCO
+  save_alignment_statistics: true # Save alignment statistics
+
+  # FLOPS-token correlation tracking
+  correlate_flops_with_tokens: true # Track FLOPS per token processed
+  log_computational_efficiency: true # Log computational efficiency metrics
+  track_throughput_vs_quality: true # Monitor trade-offs
+
+# Hugging Face Hub integration (Modified for COCO)
+huggingface_hub:
+  enabled: true # Enable automatic uploads to HF Hub
+  repo_id: "your-username/bitmar-coco" # Replace with your HF repo ID
+  private: true # Keep repo private by default
+  upload_after_epoch: true # Upload checkpoint after each epoch
+  upload_final_model: true # Upload final model at end
+  commit_message_template: "BitMar COCO - Epoch {epoch} - {total_samples:,} samples processed"
+  create_model_card: true # Generate model card automatically
+  model_card_template: |
+    ---
+    language: en
+    license: mit
+    tags:
+    - bitmar
+    - multimodal
+    - coco
+    - image-captioning
+    - cross-modal
+    datasets:
+    - coco
+    metrics:
+    - bleu
+    - cider
+    - meteor
+    - cross_modal_similarity
+    ---
+    
+    # BitMar COCO Model
+    
+    This model was trained on the COCO dataset for image captioning and cross-modal understanding.
+    
+    ## Training Details
+    - Dataset: COCO (full dataset)
+    - Epochs completed: {epoch}
+    - Total samples: {total_samples:,}
+    - Cross-modal similarity: {best_similarity:.4f}
+    
+    ## Model Architecture
+    - Text encoder: {text_encoder_layers} layers, {text_encoder_dim} hidden size
+    - Vision encoder: DiNOv2 features compressed to {vision_latent_size}
+    - Episodic memory: {memory_size} slots
+    
+    ## Usage
+    ```python
+    from transformers import AutoModel, AutoTokenizer
+    
+    model = AutoModel.from_pretrained("{repo_id}")
+    tokenizer = AutoTokenizer.from_pretrained("{repo_id}")
+    ```
+
+# Attention Sinks configuration (Enhanced for long sequences)
+attention_sinks:
+  enabled: true # Enable attention sinks for improved generation
+  attention_sink_size: 4 # Number of initial tokens as attention sinks
+  attention_sink_window_size: 1020 # Sliding window for recent tokens
+  inject_to_text_encoder: true # Apply to text encoder
+  inject_to_text_decoder: true # Apply to text decoder
+  position_shift_enabled: true # Enable position shifting
+
+  # Advanced attention sinks settings
+  cache_compression: true # Enable KV cache compression
+  adaptive_window_size: false # Keep fixed window size
+  memory_efficient_attention: true # Use memory-efficient attention
+
+  # Integration with existing BitMar features
+  preserve_episodic_memory: true # Ensure episodic memory functionality
+  preserve_quantization: true # Ensure BitNet quantization
+  preserve_cross_modal_fusion: true # Ensure cross-modal fusion
+
+# Validation configuration (COCO-specific)
+validation:
+  val_check_interval: 1.0 # Check validation every epoch
+  val_batch_size: 32
+  num_val_samples: null # Use all validation samples
+  
+  # COCO validation metrics
+  compute_coco_metrics: true # Compute official COCO metrics
+  save_generated_captions: true # Save generated captions for analysis
+  compare_with_ground_truth: true # Compare with reference captions
+
+# Logging configuration (Enhanced)
+logging:
+  use_wandb: true
+  project_name: "BitMar-COCO"
+  experiment_name: "coco_full_dataset"
+  log_every_n_steps: 50
+  save_top_k: 5 # Save top 5 checkpoints
+  monitor: "val_loss"
+  mode: "min"
+
+# Checkpoint configuration (Enhanced)
+checkpointing:
+  save_every_n_epochs: 1 # Save checkpoint every epoch
+  save_every_n_steps: null # Don't save based on steps
+  checkpoint_dir: "./checkpoints"
+  keep_top_k: 5 # Keep top 5 checkpoints
+  monitor_metric: "val_cross_modal_similarity" # Monitor this metric
+
+# Model saving configuration (Enhanced)  
+model_saving:
+  save_hf_model: true # Save to Hugging Face format
+  hf_model_name: "bitmar-coco"
+  save_every_epoch: true # Save model every epoch
+  save_optimizer_state: true # Save optimizer state
+  save_scheduler_state: true # Save scheduler state
+
+# Environment configuration (Enhanced)
+environment:
+  device: "auto" # Auto-detect GPU/CPU
+  mixed_precision: true # Use mixed precision training
+  compile_model: false # Disable model compilation for compatibility
+  deterministic: false # Allow non-deterministic for speed
+  benchmark: true # Enable cuDNN benchmark for speed
+  
+# Carbon tracking (Enhanced)
+carbon_tracking:
+  enabled: true # Enable carbon tracking
+  country_iso_code: "USA"
+  project_name: "BitMar-COCO-Training"
+  output_dir: "./emissions"
+
+# Special COCO features (Enhanced)
+coco_specific:
+  support_multiple_formats: true # Support jpg, png, webp, etc.
+  validate_images: true # Validate images before training
+  cache_features: false # Don't cache features (extract on-the-fly)
+  use_all_captions: true # Use all available captions per image
+  
+  # COCO dataset specific settings
+  use_train2014: true # Use train2014 split
+  use_val2017: true # Use val2017 split
+  merge_splits: true # Merge different splits for training
+  
+  # Image processing
+  image_size: 224 # Image size for vision model
+  normalize_images: true # Normalize images
+  augment_images: false # Disable augmentation for now
+  
+  # Caption processing
+  lowercase_captions: true # Convert captions to lowercase
+  remove_punctuation: false # Keep punctuation in captions
+  max_caption_length: 128 # Maximum caption length
