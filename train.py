@@ -1059,15 +1059,14 @@ class COCOTrainer:
 
     def log_token_progress(self):
         """Log token consumption progress"""
-        if self.training_mode == "babylm":
-            logger.info(
-                f"🎯 Tokens processed so far: {self.tokens_processed:,}")
-            logger.info(f"   Dataset size: {self.target_tokens:,} tokens")
+        logger.info(
+            f"🎯 Tokens processed so far: {self.tokens_processed:,}")
+        logger.info(f"   Dataset size: {self.target_tokens:,} tokens")
 
-            # Log to wandb with error handling
-            if self.use_wandb:
-                try:
-                    wandb.log({
+        # Log to wandb with error handling
+        if self.use_wandb:
+            try:
+                wandb.log({
                         'token_progress/processed': self.tokens_processed,
                         'token_progress/target': self.target_tokens
                     }, step=self.global_step)
@@ -1910,14 +1909,14 @@ class COCOTrainer:
 def main():
     """Main function"""
     parser = argparse.ArgumentParser(
-        description="Train BitMar with BabyLM or COCO dataset")
+        description="Train BitMar with COCO dataset")
 
     parser.add_argument("--config", type=str, default="configs/bitmar_100M_tokens.yaml",
                         help="Path to configuration file")
     parser.add_argument("--device", type=str,
                         help="Device to use (cuda:0, cpu)")
     parser.add_argument("--rebuild_cache", action="store_true",
-                        help="Rebuild token-constrained dataset cache (BabyLM mode only)")
+                        help="Rebuild dataset cache")
     parser.add_argument("--save_every_n_steps", type=int, default=None,
                         help="Save checkpoint every N training steps (optional)")
     parser.add_argument("--enable_fast_eval", action="store_true",
