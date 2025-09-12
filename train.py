@@ -7,7 +7,6 @@ from src.memory_visualization_integration import setup_memory_visualization
 from src.attention_visualizer import AttentionHeadAnalyzer
 from src.wandb_logger import BitMarWandbLogger
 from src.model import create_bitmar_model, count_parameters
-from src.dataset import create_data_module
 import os
 import sys
 import argparse
@@ -1067,26 +1066,26 @@ class COCOTrainer:
         if self.use_wandb:
             try:
                 wandb.log({
-                        'token_progress/processed': self.tokens_processed,
-                        'token_progress/target': self.target_tokens
-                    }, step=self.global_step)
-                except Exception as e:
-                    logger.warning(f"Failed to log to wandb: {e}")
-                    # Disable wandb if it keeps failing
-                    self.use_wandb = False
-        else:  # coco mode
-            logger.info(
-                f"🎯 COCO Tokens processed so far: {self.tokens_processed:,}")
+                    'token_progress/processed': self.tokens_processed,
+                    'token_progress/target': self.target_tokens
+                }, step=self.global_step)
+            except Exception as e:
+                logger.warning(f"Failed to log to wandb: {e}")
+                # Disable wandb if it keeps failing
+                self.use_wandb = False
+        
+        logger.info(
+            f"🎯 COCO Tokens processed so far: {self.tokens_processed:,}")
 
-            # Log to wandb with error handling
-            if self.use_wandb:
-                try:
-                    wandb.log({
-                        'token_progress/processed': self.tokens_processed,
-                    }, step=self.global_step)
-                except Exception as e:
-                    logger.warning(f"Failed to log to wandb: {e}")
-                    self.use_wandb = False
+        # Log to wandb with error handling
+        if self.use_wandb:
+            try:
+                wandb.log({
+                    'token_progress/processed': self.tokens_processed,
+                }, step=self.global_step)
+            except Exception as e:
+                logger.warning(f"Failed to log to wandb: {e}")
+                self.use_wandb = False
 
     def save_token_checkpoint(self):
         """Save checkpoint with token information and automatic cleanup"""
@@ -1911,7 +1910,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Train BitMar with COCO dataset")
 
-    parser.add_argument("--config", type=str, default="configs/bitmar_100M_tokens.yaml",
+    parser.add_argument("--config", type=str, default="configs/bitmar_coco.yaml",
                         help="Path to configuration file")
     parser.add_argument("--device", type=str,
                         help="Device to use (cuda:0, cpu)")
