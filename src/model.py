@@ -17,6 +17,15 @@ from fiber_fusion import FIBERCrossModalFusion, create_fiber_fusion
 
 logger = logging.getLogger(__name__)
 
+# Import GRPO reasoning module
+try:
+    from grpo_reasoning_module import BitMarGRPOReasoningModule, create_grpo_reasoning_module
+    GRPO_REASONING_AVAILABLE = True
+    logger.info("✅ GRPO reasoning module available")
+except ImportError:
+    GRPO_REASONING_AVAILABLE = False
+    logger.warning("⚠️  GRPO reasoning module not available")
+
 
 class BitNetLinear(nn.Module):
     """1.58-bit Linear layer following BitNet b1.58 architecture"""
@@ -1097,6 +1106,16 @@ class BitMarModel(nn.Module):
             dropout=config.get('dropout', 0.1)
         )
 
+        # GRPO reasoning module (NEW: integrated into architecture)
+        self.grpo_reasoning_enabled = config.get('grpo_reasoning', {}).get('enabled', False)
+        if self.grpo_reasoning_enabled and GRPO_REASONING_AVAILABLE:
+            self.grpo_reasoning = create_grpo_reasoning_module(config)
+            logger.info("✅ GRPO reasoning module integrated into BitMar model")
+        else:
+            self.grpo_reasoning = None
+            if self.grpo_reasoning_enabled:
+                logger.warning("⚠️  GRPO reasoning requested but not available, using standard processing")
+
         # Episodic memory with BitNet quantization
         self.memory = EpisodicMemory(
             memory_size=config['memory_size'],
@@ -1394,6 +1413,32 @@ class BitMarModel(nn.Module):
             except Exception as e:
                 logger.warning(f"Failed to update adaptive controller: {e}")
 
+        # GRPO Reasoning Stage (NEW: between fusion and memory)
+        grpo_reasoning_output = None
+        reasoning_enhanced_features = fused_features
+        
+        if self.grpo_reasoning is not None:
+            # Pool text features for reasoning context
+            fusion_context = fused_features.mean(dim=1)  # [batch_size, fusion_hidden_size]
+            
+            # Apply GRPO reasoning with robot selection
+            grpo_reasoning_output = self.grpo_reasoning(
+                context=fusion_context,
+                vision_features=vision_latent_masked,
+                return_loss=(mode == "train")
+            )
+            
+            # Enhance features with reasoning state
+            reasoning_state = grpo_reasoning_output["reasoning_state"]  # [batch_size, hidden_dim]
+            reasoning_enhancement = reasoning_state.unsqueeze(1).expand(-1, seq_len, -1)
+            
+            # Blend reasoning with original features
+            reasoning_weight = self.config.get('grpo_reasoning', {}).get('reasoning_weight', 0.3)
+            reasoning_enhanced_features = (
+                (1 - reasoning_weight) * fused_features + 
+                reasoning_weight * reasoning_enhancement
+            )
+
         # Create episodes (different handling for vision vs text-only)
         episode = self.create_episode_mixed(
             text_features, vision_latent_masked, cross_attention, has_vision
@@ -1405,10 +1450,10 @@ class BitMarModel(nn.Module):
         else:
             retrieved_memory, memory_attention = self.memory(episode, mode="read")
 
-        # Prepare decoder input
+        # Prepare decoder input with reasoning enhancement
         memory_context = self.memory_to_decoder(retrieved_memory)
         memory_context_expanded = memory_context.unsqueeze(1).expand(-1, seq_len, -1)
-        fused_with_memory = fused_features + memory_context_expanded
+        fused_with_memory = reasoning_enhanced_features + memory_context_expanded
         decoder_input = self.decoder_input_proj(fused_with_memory)
 
         # Generate text using BitNet decoder
@@ -1449,10 +1494,15 @@ class BitMarModel(nn.Module):
             if self.config.get('use_memory_consistency_loss', True):
                 memory_loss = self.compute_memory_consistency_loss(episode, retrieved_memory)
 
+            # GRPO reasoning loss (NEW)
+            grpo_reasoning_loss = None
+            if grpo_reasoning_output is not None and 'total_loss' in grpo_reasoning_output:
+                grpo_reasoning_loss = grpo_reasoning_output['total_loss']
+
             # Compute balanced loss with adaptive controller support
             loss_dict = self.compute_balanced_loss_mixed(
                 decoder_loss, cross_modal_loss, vision_loss, memory_loss, 
-                step, adaptive_controller, has_vision
+                step, adaptive_controller, has_vision, grpo_reasoning_loss
             )
 
             final_loss = loss_dict['total_loss']
@@ -1465,7 +1515,7 @@ class BitMarModel(nn.Module):
             'logits': decoder_outputs['logits'],
             'text_features': text_features,
             'vision_latent': vision_latent_masked,  # Return masked version
-            'fused_features': fused_features,
+            'fused_features': reasoning_enhanced_features,  # Return reasoning-enhanced features
             'episode': episode,
             'retrieved_memory': retrieved_memory,
             'cross_attention': cross_attention,
@@ -1474,6 +1524,7 @@ class BitMarModel(nn.Module):
             'decoder_attention': decoder_outputs.get('attention_patterns', None),
             'memory_usage': self.memory.memory_usage.clone(),
             'has_vision': has_vision,  # Return for downstream analysis
+            'grpo_reasoning_output': grpo_reasoning_output,  # NEW: GRPO reasoning results
         }
 
         # Add loss breakdown and freezing status
@@ -1629,14 +1680,16 @@ class BitMarModel(nn.Module):
         memory_loss: Optional[torch.Tensor],
         step: int,
         adaptive_controller=None,
-        has_vision: torch.Tensor = None
+        has_vision: torch.Tensor = None,
+        grpo_reasoning_loss: Optional[torch.Tensor] = None  # NEW: GRPO reasoning loss
     ) -> Dict[str, torch.Tensor]:
-        """Compute balanced loss for mixed vision/text batches"""
+        """Compute balanced loss for mixed vision/text batches with GRPO reasoning"""
         
         # Base loss weights from config
         text_weight = self.config.get('text_generation_loss_weight', 1.0)
         cross_modal_weight = self.config.get('cross_modal_loss_weight', 1.0)
         memory_weight = self.config.get('memory_regularization_weight', 0.1)
+        grpo_reasoning_weight = self.config.get('grpo_reasoning', {}).get('loss_weight', 0.2)  # NEW
         
         # Adjust cross-modal weight based on vision availability
         if has_vision is not None:
@@ -1661,6 +1714,10 @@ class BitMarModel(nn.Module):
             
         if memory_loss is not None:
             total_loss = total_loss + memory_weight * memory_loss
+            
+        # NEW: Add GRPO reasoning loss
+        if grpo_reasoning_loss is not None:
+            total_loss = total_loss + grpo_reasoning_weight * grpo_reasoning_loss
         
         # Return loss breakdown
         loss_dict = {
@@ -1669,15 +1726,124 @@ class BitMarModel(nn.Module):
             'cross_modal_loss': cross_modal_loss,
             'text_weight': text_weight,
             'cross_modal_weight': cross_modal_weight,
-            'memory_weight': memory_weight
+            'memory_weight': memory_weight,
+            'grpo_reasoning_weight': grpo_reasoning_weight  # NEW
         }
         
         if vision_loss is not None:
             loss_dict['vision_loss'] = vision_loss
         if memory_loss is not None:
             loss_dict['memory_loss'] = memory_loss
+        if grpo_reasoning_loss is not None:
+            loss_dict['grpo_reasoning_loss'] = grpo_reasoning_loss  # NEW
             
         return loss_dict
+
+    def extract_robot_selections(
+        self,
+        outputs: Dict[str, torch.Tensor],
+        threshold: float = 0.3
+    ) -> List[str]:
+        """
+        Extract human-readable robot selections from model outputs
+        
+        Args:
+            outputs: Model forward outputs containing GRPO reasoning results
+            threshold: Probability threshold for robot selection
+            
+        Returns:
+            List of robot selection strings for each sample in batch
+        """
+        if 'grpo_reasoning_output' not in outputs or outputs['grpo_reasoning_output'] is None:
+            # No GRPO reasoning available, return placeholder
+            batch_size = outputs['logits'].size(0)
+            return ["No robot reasoning available"] * batch_size
+        
+        grpo_output = outputs['grpo_reasoning_output']
+        
+        if 'robot_selection' not in grpo_output:
+            batch_size = outputs['logits'].size(0)
+            return ["Robot reasoning failed"] * batch_size
+        
+        robot_probs = grpo_output['robot_selection']  # [batch_size, 6]
+        
+        # Use the GRPO reasoning module's extraction method
+        if self.grpo_reasoning is not None:
+            return self.grpo_reasoning.extract_robot_selection_text(robot_probs, threshold)
+        else:
+            # Fallback extraction
+            robot_names = [
+                "Drone", "Underwater Robot", "Humanoid", 
+                "Robot with Wheels", "Robot with Legs", "No Robot"
+            ]
+            
+            batch_size = robot_probs.size(0)
+            selections = []
+            
+            for batch_idx in range(batch_size):
+                selected_robots = []
+                probs = robot_probs[batch_idx]
+                
+                for robot_idx, prob in enumerate(probs):
+                    if prob > threshold and robot_idx < 5:  # Exclude "No Robot"
+                        selected_robots.append(robot_names[robot_idx])
+                
+                if not selected_robots:
+                    # If no robot meets threshold, select the highest probability one
+                    max_idx = torch.argmax(probs[:5])  # Exclude "No Robot"
+                    selected_robots.append(robot_names[max_idx])
+                
+                selections.append(", ".join(selected_robots))
+            
+            return selections
+
+    def get_reasoning_analysis(
+        self,
+        outputs: Dict[str, torch.Tensor]
+    ) -> Dict[str, any]:
+        """
+        Get detailed analysis of GRPO reasoning outputs
+        
+        Args:
+            outputs: Model forward outputs containing GRPO reasoning results
+            
+        Returns:
+            Dict containing reasoning analysis
+        """
+        if 'grpo_reasoning_output' not in outputs or outputs['grpo_reasoning_output'] is None:
+            return {"reasoning_available": False}
+        
+        grpo_output = outputs['grpo_reasoning_output']
+        
+        analysis = {
+            "reasoning_available": True,
+            "robot_selections": self.extract_robot_selections(outputs),
+        }
+        
+        # Add reasoning quality if available
+        if 'reasoning_quality' in grpo_output:
+            quality = grpo_output['reasoning_quality']  # [batch_size, 4]
+            quality_labels = ['coherence', 'relevance', 'completeness', 'accuracy']
+            
+            analysis['reasoning_quality'] = {}
+            for i, label in enumerate(quality_labels):
+                analysis['reasoning_quality'][label] = quality[:, i].mean().item()
+        
+        # Add thought scores if available
+        if 'thought_scores' in grpo_output:
+            thought_scores = grpo_output['thought_scores']  # [batch_size, steps, 1]
+            analysis['thought_progression'] = thought_scores.mean(dim=0).squeeze(-1).tolist()
+        
+        # Add robot probabilities
+        if 'robot_selection' in grpo_output:
+            robot_probs = grpo_output['robot_selection']  # [batch_size, 6]
+            robot_names = ["Drone", "Underwater Robot", "Humanoid", "Robot with Wheels", "Robot with Legs", "No Robot"]
+            
+            analysis['robot_probabilities'] = {}
+            for i, name in enumerate(robot_names):
+                analysis['robot_probabilities'][name] = robot_probs[:, i].mean().item()
+        
+        return analysis
 
 
 def count_parameters(model: nn.Module) -> Dict[str, int]:
