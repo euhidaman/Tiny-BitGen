@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 # Import GRPO reasoning module
 try:
-    from grpo_reasoning_module import BitMarGRPOReasoningModule, create_grpo_reasoning_module
+    from src.grpo_reasoning_module import BitMarGRPOReasoningModule
     GRPO_REASONING_AVAILABLE = True
     logger.info("✅ GRPO reasoning module available")
 except ImportError:
@@ -47,10 +47,12 @@ class BitNetLinear(nn.Module):
         """BitNet b1.58 weight quantization: {-1, 0, +1}"""
         # Compute scaling factor with numerical stability
         scale = weight.abs().mean()
-        self.weight_scale.data = scale.clamp(min=1e-5, max=1e3)  # Prevent extreme scales
+        self.weight_scale.data = scale.clamp(
+            min=1e-5, max=1e3)  # Prevent extreme scales
 
         # Normalize weights with gradient clipping
-        weight_norm = torch.clamp(weight / self.weight_scale, min=-10.0, max=10.0)
+        weight_norm = torch.clamp(
+            weight / self.weight_scale, min=-10.0, max=10.0)
 
         # 1.58-bit quantization with threshold
         threshold = 2.0 / 3.0  # Optimal threshold for ternary quantization
@@ -165,11 +167,14 @@ class BitNetAttention(nn.Module):
 
         # Validate input dimensions
         if query.size(-1) != self.dim:
-            raise ValueError(f"Query dimension {query.size(-1)} doesn't match expected {self.dim}")
+            raise ValueError(
+                f"Query dimension {query.size(-1)} doesn't match expected {self.dim}")
         if key.size(-1) != self.dim:
-            raise ValueError(f"Key dimension {key.size(-1)} doesn't match expected {self.dim}")
+            raise ValueError(
+                f"Key dimension {key.size(-1)} doesn't match expected {self.dim}")
         if value.size(-1) != self.dim:
-            raise ValueError(f"Value dimension {value.size(-1)} doesn't match expected {self.dim}")
+            raise ValueError(
+                f"Value dimension {value.size(-1)} doesn't match expected {self.dim}")
 
         # Linear projections
         q = self.q_proj(query)
@@ -178,11 +183,14 @@ class BitNetAttention(nn.Module):
 
         # Get key/value sequence length (handle different shapes)
         key_seq_len = key.size(1)
-        
+
         # Reshape for multi-head attention with proper dimension checking
-        q = q.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-        k = k.view(batch_size, key_seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-        v = v.view(batch_size, key_seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        q = q.view(batch_size, seq_len, self.num_heads,
+                   self.head_dim).transpose(1, 2)
+        k = k.view(batch_size, key_seq_len, self.num_heads,
+                   self.head_dim).transpose(1, 2)
+        v = v.view(batch_size, key_seq_len, self.num_heads,
+                   self.head_dim).transpose(1, 2)
 
         # Attention computation
         attention_scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale
@@ -190,7 +198,8 @@ class BitNetAttention(nn.Module):
         if mask is not None:
             # Handle mask shape: expand to match attention scores shape
             if mask.dim() == 2:  # [batch_size, seq_len]
-                mask = mask.unsqueeze(1).unsqueeze(1)  # [batch_size, 1, 1, seq_len]
+                mask = mask.unsqueeze(1).unsqueeze(
+                    1)  # [batch_size, 1, 1, seq_len]
             elif mask.dim() == 3:  # [batch_size, seq_len, seq_len]
                 mask = mask.unsqueeze(1)  # [batch_size, 1, seq_len, seq_len]
 
@@ -201,11 +210,13 @@ class BitNetAttention(nn.Module):
                     # Pad or trim mask to match key_seq_len
                     if key_seq_len > seq_len:
                         pad_size = key_seq_len - seq_len
-                        mask = torch.cat([mask, torch.zeros(*mask.shape[:-1], pad_size, device=mask.device, dtype=mask.dtype)], dim=-1)
+                        mask = torch.cat([mask, torch.zeros(
+                            *mask.shape[:-1], pad_size, device=mask.device, dtype=mask.dtype)], dim=-1)
                     else:
                         mask = mask[..., :key_seq_len]
-            
-            mask = mask.expand(batch_size, self.num_heads, seq_len, key_seq_len)
+
+            mask = mask.expand(batch_size, self.num_heads,
+                               seq_len, key_seq_len)
             attention_scores.masked_fill_(mask == 0, float('-inf'))
 
         attention_weights = F.softmax(attention_scores, dim=-1)
@@ -460,7 +471,8 @@ class EpisodicMemory(nn.Module):
             self._metadata = None
         else:
             # Standard initialization for compatibility
-            self.register_buffer('memory', torch.randn(memory_size, episode_dim) * 0.02)
+            self.register_buffer('memory', torch.randn(
+                memory_size, episode_dim) * 0.02)
             self.register_buffer('memory_age', torch.zeros(memory_size))
             self.register_buffer('memory_usage', torch.zeros(memory_size))
 
@@ -492,7 +504,8 @@ class EpisodicMemory(nn.Module):
         )
 
         # Add temperature parameter for attention sharpening
-        self.register_parameter('attention_temperature', nn.Parameter(torch.tensor(1.0)))
+        self.register_parameter('attention_temperature',
+                                nn.Parameter(torch.tensor(1.0)))
 
         # Memory consolidation network for better episode encoding
         self.consolidation_net = nn.Sequential(
@@ -510,7 +523,8 @@ class EpisodicMemory(nn.Module):
             self.load_external_memory()
         elif not hasattr(self, 'memory'):
             # Initialize if not present (compatibility mode)
-            self.register_buffer('memory', torch.randn(self.memory_size, self.episode_dim) * 0.02)
+            self.register_buffer('memory', torch.randn(
+                self.memory_size, self.episode_dim) * 0.02)
             self.register_buffer('memory_age', torch.zeros(self.memory_size))
             self.register_buffer('memory_usage', torch.zeros(self.memory_size))
 
@@ -551,7 +565,8 @@ class EpisodicMemory(nn.Module):
         # Apply compression if enabled
         if use_compression:
             # Quantize memory to reduce storage size
-            memory_data['memory'] = self._compress_memory_tensor(memory_data['memory'])
+            memory_data['memory'] = self._compress_memory_tensor(
+                memory_data['memory'])
             memory_data['compressed'] = True
         else:
             memory_data['compressed'] = False
@@ -595,11 +610,13 @@ class EpisodicMemory(nn.Module):
 
             # Validate compatibility
             if memory_data['metadata']['memory_size'] != self.memory_size:
-                logger.error(f"❌ Memory size mismatch: expected {self.memory_size}, got {memory_data['metadata']['memory_size']}")
+                logger.error(
+                    f"❌ Memory size mismatch: expected {self.memory_size}, got {memory_data['metadata']['memory_size']}")
                 return False
 
             if memory_data['metadata']['episode_dim'] != self.episode_dim:
-                logger.error(f"❌ Episode dimension mismatch: expected {self.episode_dim}, got {memory_data['metadata']['episode_dim']}")
+                logger.error(
+                    f"❌ Episode dimension mismatch: expected {self.episode_dim}, got {memory_data['metadata']['episode_dim']}")
                 return False
 
             # Set device
@@ -607,7 +624,8 @@ class EpisodicMemory(nn.Module):
 
             # Decompress if needed
             if memory_data.get('compressed', False):
-                memory_tensor = self._decompress_memory_tensor(memory_data['memory'])
+                memory_tensor = self._decompress_memory_tensor(
+                    memory_data['memory'])
             else:
                 memory_tensor = memory_data['memory']
 
@@ -619,11 +637,14 @@ class EpisodicMemory(nn.Module):
             else:
                 # Register buffers if not present (lazy loading case)
                 self.register_buffer('memory', memory_tensor.to(device))
-                self.register_buffer('memory_age', memory_data['memory_age'].to(device))
-                self.register_buffer('memory_usage', memory_data['memory_usage'].to(device))
+                self.register_buffer(
+                    'memory_age', memory_data['memory_age'].to(device))
+                self.register_buffer(
+                    'memory_usage', memory_data['memory_usage'].to(device))
 
             self.memory_quality.copy_(memory_data['memory_quality'].to(device))
-            self.memory_importance.copy_(memory_data['memory_importance'].to(device))
+            self.memory_importance.copy_(
+                memory_data['memory_importance'].to(device))
             self.memory_mean.copy_(memory_data['memory_mean'].to(device))
             self.memory_std.copy_(memory_data['memory_std'].to(device))
             self.update_count.copy_(memory_data['update_count'].to(device))
@@ -652,7 +673,8 @@ class EpisodicMemory(nn.Module):
             return tensor
 
         # Quantize to int8 range
-        quantized = ((tensor - tensor_min) / tensor_range * 255).round().clamp(0, 255).to(torch.uint8)
+        quantized = ((tensor - tensor_min) / tensor_range *
+                     255).round().clamp(0, 255).to(torch.uint8)
 
         # Store quantization parameters
         return {
@@ -686,8 +708,10 @@ class EpisodicMemory(nn.Module):
 
             # Exponential moving average
             momentum = 0.1
-            self.memory_mean = (1 - momentum) * self.memory_mean + momentum * batch_mean
-            self.memory_std = torch.sqrt((1 - momentum) * self.memory_std**2 + momentum * batch_var)
+            self.memory_mean = (1 - momentum) * \
+                self.memory_mean + momentum * batch_mean
+            self.memory_std = torch.sqrt(
+                (1 - momentum) * self.memory_std**2 + momentum * batch_var)
             self.update_count += 1
 
     def _normalize_episodes(self, episodes: torch.Tensor) -> torch.Tensor:
@@ -717,7 +741,8 @@ class EpisodicMemory(nn.Module):
         batch_size = episode.size(0)
 
         # Apply consolidation to improve episode representation
-        consolidated_episode = self.consolidation_net(episode) + episode  # Residual connection
+        consolidated_episode = self.consolidation_net(
+            episode) + episode  # Residual connection
 
         # Update statistics
         self._update_memory_statistics(consolidated_episode)
@@ -742,7 +767,8 @@ class EpisodicMemory(nn.Module):
                     0.1 * importance_scores
                 )
 
-                _, best_indices = composite_scores.topk(batch_size, largest=True)
+                _, best_indices = composite_scores.topk(
+                    batch_size, largest=True)
 
                 # Update memory slots with momentum-based updates
                 momentum = self.alpha
@@ -780,7 +806,8 @@ class EpisodicMemory(nn.Module):
                         0.1 * importance_scores
                     )
 
-                    _, chunk_indices = composite_scores.topk(chunk_size, largest=True)
+                    _, chunk_indices = composite_scores.topk(
+                        chunk_size, largest=True)
 
                     momentum = self.alpha
                     self.memory[chunk_indices] = (
@@ -788,10 +815,12 @@ class EpisodicMemory(nn.Module):
                         momentum * normalized_episode[i:end_idx].detach()
                     )
 
-                    self.memory_age[chunk_indices] = self.memory_age.max() + 1 + i
+                    self.memory_age[chunk_indices] = self.memory_age.max() + \
+                        1 + i
                     self.memory_usage[chunk_indices] += 1
 
-                    temp_quality = torch.norm(normalized_episode[i:end_idx], dim=-1)
+                    temp_quality = torch.norm(
+                        normalized_episode[i:end_idx], dim=-1)
                     self.memory_quality[chunk_indices] = temp_quality.detach()
 
         return consolidated_episode
@@ -802,7 +831,8 @@ class EpisodicMemory(nn.Module):
 
         # Validate query dimensions
         if query.size(-1) != self.episode_dim:
-            raise ValueError(f"Query dimension {query.size(-1)} doesn't match memory episode_dim {self.episode_dim}")
+            raise ValueError(
+                f"Query dimension {query.size(-1)} doesn't match memory episode_dim {self.episode_dim}")
 
         # Normalize query
         normalized_query = self._normalize_episodes(query)
@@ -814,12 +844,15 @@ class EpisodicMemory(nn.Module):
 
         # Scaled dot-product attention with learnable temperature
         attention_scores = torch.matmul(q, k.transpose(0, 1)) / (
-            math.sqrt(self.episode_dim) * self.attention_temperature.clamp(min=0.1, max=10.0)
+            math.sqrt(self.episode_dim) *
+            self.attention_temperature.clamp(min=0.1, max=10.0)
         )
 
         # Add importance weighting to attention scores
-        importance_weights = self.memory_importance.unsqueeze(0).expand(batch_size, -1)
-        attention_scores = attention_scores + torch.log(importance_weights + 1e-8)
+        importance_weights = self.memory_importance.unsqueeze(
+            0).expand(batch_size, -1)
+        attention_scores = attention_scores + \
+            torch.log(importance_weights + 1e-8)
 
         # Apply attention with improved stability
         attention_weights = F.softmax(attention_scores, dim=-1)
@@ -837,13 +870,16 @@ class EpisodicMemory(nn.Module):
             self.memory_usage += access_counts
 
             # Update importance based on usage frequency
-            self.memory_importance = 0.9 * self.memory_importance + 0.1 * (access_counts + 1e-8)
+            self.memory_importance = 0.9 * \
+                self.memory_importance + 0.1 * (access_counts + 1e-8)
 
             # Update quality scores based on retrieval effectiveness
             if hasattr(self, '_last_query_quality'):
-                quality_update = self._compute_episode_quality(query, retrieved)
+                quality_update = self._compute_episode_quality(
+                    query, retrieved)
                 # Update quality for attended slots
-                attended_indices = attention_weights.max(0)[1]  # Most attended slots
+                attended_indices = attention_weights.max(
+                    0)[1]  # Most attended slots
                 self.memory_quality[attended_indices] = (
                     0.8 * self.memory_quality[attended_indices] +
                     0.2 * quality_update.mean()
@@ -862,7 +898,8 @@ class EpisodicMemory(nn.Module):
             consolidated_episode = self.write_memory(episode)
 
             # Read from memory using consolidated episode as query
-            retrieved, attention_weights = self.read_memory(consolidated_episode)
+            retrieved, attention_weights = self.read_memory(
+                consolidated_episode)
 
             # Memory-augmented output combining input and retrieved memory
             output = 0.7 * consolidated_episode + 0.3 * retrieved
@@ -887,7 +924,8 @@ class EpisodicMemory(nn.Module):
         with torch.no_grad():
             # Sort memory by importance and quality
             importance_quality_score = 0.6 * self.memory_importance + 0.4 * self.memory_quality
-            sorted_indices = torch.argsort(importance_quality_score, descending=True)
+            sorted_indices = torch.argsort(
+                importance_quality_score, descending=True)
 
             # Reorganize memory to group similar episodes
             sorted_memory = self.memory[sorted_indices]
@@ -937,7 +975,8 @@ class EpisodicMemory(nn.Module):
         snapshot_path = snapshots_dir / f"{snapshot_name}.pt"
 
         # Save current memory state
-        saved_path = self.save_external_memory(str(snapshot_path), compress=True)
+        saved_path = self.save_external_memory(
+            str(snapshot_path), compress=True)
 
         logger.info(f"📸 Memory snapshot created: {saved_path}")
         return saved_path
@@ -1027,9 +1066,11 @@ class VisionEncoder(nn.Module):
             if vision_features.size(-1) != self.layers[0].in_features:
                 # Take only the first input_dim features if we have more
                 if vision_features.size(-1) > self.layers[0].in_features:
-                    vision_features = vision_features[:, :self.layers[0].in_features]
+                    vision_features = vision_features[:,
+                                                      :self.layers[0].in_features]
                 else:
-                    raise ValueError(f"Vision features dimension {vision_features.size(-1)} is smaller than expected {self.layers[0].in_features}")
+                    raise ValueError(
+                        f"Vision features dimension {vision_features.size(-1)} is smaller than expected {self.layers[0].in_features}")
 
         x = vision_features
 
@@ -1056,18 +1097,22 @@ class BitMarModel(nn.Module):
         self.config = config
 
         # Loss balancing parameters
-        self.cross_modal_loss_weight = config.get('cross_modal_loss_weight', 0.1)
+        self.cross_modal_loss_weight = config.get(
+            'cross_modal_loss_weight', 0.1)
         self.text_loss_weight = config.get('text_loss_weight', 1.0)
         self.vision_loss_weight = config.get('vision_loss_weight', 0.1)
         self.memory_loss_weight = config.get('memory_loss_weight', 0.05)
 
         # Dynamic loss scaling
         self.adaptive_loss_scaling = config.get('adaptive_loss_scaling', True)
-        self.loss_scale_temperature = config.get('loss_scale_temperature', 0.07)
+        self.loss_scale_temperature = config.get(
+            'loss_scale_temperature', 0.07)
 
         # Encoder freezing parameters
-        self.freeze_text_encoder_steps = config.get('freeze_text_encoder_steps', 0)
-        self.freeze_vision_encoder_steps = config.get('freeze_vision_encoder_steps', 0)
+        self.freeze_text_encoder_steps = config.get(
+            'freeze_text_encoder_steps', 0)
+        self.freeze_vision_encoder_steps = config.get(
+            'freeze_vision_encoder_steps', 0)
         self.current_step = 0
 
         # BitNet text encoder/decoder
@@ -1107,14 +1152,24 @@ class BitMarModel(nn.Module):
         )
 
         # GRPO reasoning module (NEW: integrated into architecture)
-        self.grpo_reasoning_enabled = config.get('grpo_reasoning', {}).get('enabled', False)
+        self.grpo_reasoning_enabled = config.get(
+            'grpo_reasoning', {}).get('enabled', False)
         if self.grpo_reasoning_enabled and GRPO_REASONING_AVAILABLE:
-            self.grpo_reasoning = create_grpo_reasoning_module(config)
+            grpo_config = config.get('grpo_reasoning', {})
+            self.grpo_reasoning = BitMarGRPOReasoningModule(
+                hidden_dim=config['fusion_hidden_size'],
+                vocab_size=config['vocab_size'],
+                max_reasoning_steps=grpo_config.get('max_reasoning_steps', 5),
+                reasoning_temperature=grpo_config.get(
+                    'reasoning_temperature', 0.7),
+                grpo_config=grpo_config.get('training', {})
+            )
             logger.info("✅ GRPO reasoning module integrated into BitMar model")
         else:
             self.grpo_reasoning = None
             if self.grpo_reasoning_enabled:
-                logger.warning("⚠️  GRPO reasoning requested but not available, using standard processing")
+                logger.warning(
+                    "⚠️  GRPO reasoning requested but not available, using standard processing")
 
         # Episodic memory with BitNet quantization
         self.memory = EpisodicMemory(
@@ -1129,12 +1184,12 @@ class BitMarModel(nn.Module):
             config['text_encoder_dim'],
             config['episode_dim']
         )
-        
+
         self.vision_to_episode = BitNetLinear(
             config['vision_latent_size'],
             config['episode_dim']
         )
-        
+
         self.memory_to_decoder = BitNetLinear(
             config['episode_dim'],
             config['fusion_hidden_size']
@@ -1259,7 +1314,8 @@ class BitMarModel(nn.Module):
         """
         Compute balanced multi-objective loss with adaptive scaling
         """
-        losses = {'decoder_loss': decoder_loss, 'cross_modal_loss': cross_modal_loss}
+        losses = {'decoder_loss': decoder_loss,
+                  'cross_modal_loss': cross_modal_loss}
 
         if vision_loss is not None:
             losses['vision_loss'] = vision_loss
@@ -1275,12 +1331,14 @@ class BitMarModel(nn.Module):
 
                 # Prevent division by zero
                 if decoder_scale > 1e-8:
-                    adaptive_cross_modal_weight = (decoder_scale / cross_modal_scale.clamp(min=1e-8)) * self.cross_modal_loss_weight
+                    adaptive_cross_modal_weight = (
+                        decoder_scale / cross_modal_scale.clamp(min=1e-8)) * self.cross_modal_loss_weight
                 else:
                     adaptive_cross_modal_weight = self.cross_modal_loss_weight
 
                 # Clamp adaptive weights
-                adaptive_cross_modal_weight = torch.clamp(adaptive_cross_modal_weight, 0.01, 1.0)
+                adaptive_cross_modal_weight = torch.clamp(
+                    adaptive_cross_modal_weight, 0.01, 1.0)
         else:
             adaptive_cross_modal_weight = self.cross_modal_loss_weight
 
@@ -1336,12 +1394,13 @@ class BitMarModel(nn.Module):
         labels: Optional[torch.Tensor] = None,
         mode: str = "train",
         step: int = 0,
-        has_vision: Optional[torch.Tensor] = None,  # NEW: Indicates which samples have real vision
+        # NEW: Indicates which samples have real vision
+        has_vision: Optional[torch.Tensor] = None,
         adaptive_controller=None  # NEW: Adaptive training controller
     ) -> Dict[str, torch.Tensor]:
         """
         Forward pass through BitMar model with mixed vision/text batch support
-        
+
         Args:
             has_vision: Boolean tensor [batch_size] indicating which samples have real vision features
         """
@@ -1350,29 +1409,34 @@ class BitMarModel(nn.Module):
         # Validate input tensor dimensions early
         expected_vision_dim = self.config['vision_encoder_dim']
         if vision_features.dim() != 2 or vision_features.size(-1) != expected_vision_dim:
-            raise ValueError(f"Vision features shape {vision_features.shape} doesn't match expected [batch_size, {expected_vision_dim}]")
-        
+            raise ValueError(
+                f"Vision features shape {vision_features.shape} doesn't match expected [batch_size, {expected_vision_dim}]")
+
         if input_ids.size(0) != vision_features.size(0):
-            raise ValueError(f"Batch size mismatch: input_ids {input_ids.size(0)} vs vision_features {vision_features.size(0)}")
+            raise ValueError(
+                f"Batch size mismatch: input_ids {input_ids.size(0)} vs vision_features {vision_features.size(0)}")
 
         # Default has_vision to all True if not provided (backward compatibility)
         if has_vision is None:
-            has_vision = torch.ones(batch_size, dtype=torch.bool, device=input_ids.device)
+            has_vision = torch.ones(
+                batch_size, dtype=torch.bool, device=input_ids.device)
 
         # Apply adaptive encoder freezing if controller is provided
         freezing_status = {}
         if mode == "train" and adaptive_controller is not None:
-            freezing_status = self.apply_adaptive_encoder_freezing(adaptive_controller)
+            freezing_status = self.apply_adaptive_encoder_freezing(
+                adaptive_controller)
         elif mode == "train":
             # Fallback to step-based freezing
             freezing_status = self.apply_encoder_freezing(step)
 
         # Encode text (always available)
-        text_features, text_attention = self.encode_text(input_ids, attention_mask)
-        
+        text_features, text_attention = self.encode_text(
+            input_ids, attention_mask)
+
         # Encode vision (with masking for text-only samples)
         vision_latent = self.encode_vision(vision_features)
-        
+
         # Mask vision features for text-only samples
         vision_mask = has_vision.float().unsqueeze(-1)  # [batch_size, 1]
         vision_latent_masked = vision_latent * vision_mask
@@ -1383,7 +1447,7 @@ class BitMarModel(nn.Module):
             text_features=text_features,
             text_mask=attention_mask
         )
-        
+
         # Extract fused features (use text features as main sequence output)
         fused_features = fusion_result['text_features']
         cross_attention = {
@@ -1398,16 +1462,20 @@ class BitMarModel(nn.Module):
                 vision_indices = has_vision.nonzero(as_tuple=True)[0]
                 if len(vision_indices) > 0:
                     # Get features for samples with vision
-                    text_with_vision = text_features[vision_indices]  # [n_vision, seq_len, dim]
-                    vision_with_vision = vision_latent_masked[vision_indices]  # [n_vision, dim]
-                    
+                    # [n_vision, seq_len, dim]
+                    text_with_vision = text_features[vision_indices]
+                    # [n_vision, dim]
+                    vision_with_vision = vision_latent_masked[vision_indices]
+
                     # Pool text features
-                    text_pooled = text_with_vision.mean(dim=1)  # [n_vision, dim]
-                    
+                    text_pooled = text_with_vision.mean(
+                        dim=1)  # [n_vision, dim]
+
                     # Compute cosine similarity
-                    similarity = F.cosine_similarity(text_pooled, vision_with_vision, dim=1)
+                    similarity = F.cosine_similarity(
+                        text_pooled, vision_with_vision, dim=1)
                     avg_similarity = similarity.mean().item()
-                    
+
                     # Update adaptive controller
                     adaptive_controller.update_similarity(avg_similarity, step)
             except Exception as e:
@@ -1416,26 +1484,30 @@ class BitMarModel(nn.Module):
         # GRPO Reasoning Stage (NEW: between fusion and memory)
         grpo_reasoning_output = None
         reasoning_enhanced_features = fused_features
-        
+
         if self.grpo_reasoning is not None:
             # Pool text features for reasoning context
-            fusion_context = fused_features.mean(dim=1)  # [batch_size, fusion_hidden_size]
-            
+            # [batch_size, fusion_hidden_size]
+            fusion_context = fused_features.mean(dim=1)
+
             # Apply GRPO reasoning with robot selection
             grpo_reasoning_output = self.grpo_reasoning(
                 context=fusion_context,
                 vision_features=vision_latent_masked,
                 return_loss=(mode == "train")
             )
-            
+
             # Enhance features with reasoning state
-            reasoning_state = grpo_reasoning_output["reasoning_state"]  # [batch_size, hidden_dim]
-            reasoning_enhancement = reasoning_state.unsqueeze(1).expand(-1, seq_len, -1)
-            
+            # [batch_size, hidden_dim]
+            reasoning_state = grpo_reasoning_output["reasoning_state"]
+            reasoning_enhancement = reasoning_state.unsqueeze(
+                1).expand(-1, seq_len, -1)
+
             # Blend reasoning with original features
-            reasoning_weight = self.config.get('grpo_reasoning', {}).get('reasoning_weight', 0.3)
+            reasoning_weight = self.config.get(
+                'grpo_reasoning', {}).get('reasoning_weight', 0.3)
             reasoning_enhanced_features = (
-                (1 - reasoning_weight) * fused_features + 
+                (1 - reasoning_weight) * fused_features +
                 reasoning_weight * reasoning_enhancement
             )
 
@@ -1446,13 +1518,16 @@ class BitMarModel(nn.Module):
 
         # Episodic memory interaction
         if mode == "train":
-            retrieved_memory, memory_attention = self.memory(episode, mode="read_write")
+            retrieved_memory, memory_attention = self.memory(
+                episode, mode="read_write")
         else:
-            retrieved_memory, memory_attention = self.memory(episode, mode="read")
+            retrieved_memory, memory_attention = self.memory(
+                episode, mode="read")
 
         # Prepare decoder input with reasoning enhancement
         memory_context = self.memory_to_decoder(retrieved_memory)
-        memory_context_expanded = memory_context.unsqueeze(1).expand(-1, seq_len, -1)
+        memory_context_expanded = memory_context.unsqueeze(
+            1).expand(-1, seq_len, -1)
         fused_with_memory = reasoning_enhanced_features + memory_context_expanded
         decoder_input = self.decoder_input_proj(fused_with_memory)
 
@@ -1485,14 +1560,16 @@ class BitMarModel(nn.Module):
             if hasattr(self, 'vision_reconstruction') and self.config.get('use_vision_reconstruction', False):
                 if has_vision.any():
                     vision_indices = has_vision.nonzero(as_tuple=True)[0]
-                    reconstructed_vision = self.vision_reconstruction(vision_latent[vision_indices])
+                    reconstructed_vision = self.vision_reconstruction(
+                        vision_latent[vision_indices])
                     vision_loss = self.compute_vision_reconstruction_loss(
                         vision_features[vision_indices], reconstructed_vision
                     )
 
             memory_loss = None
             if self.config.get('use_memory_consistency_loss', True):
-                memory_loss = self.compute_memory_consistency_loss(episode, retrieved_memory)
+                memory_loss = self.compute_memory_consistency_loss(
+                    episode, retrieved_memory)
 
             # GRPO reasoning loss (NEW)
             grpo_reasoning_loss = None
@@ -1501,7 +1578,7 @@ class BitMarModel(nn.Module):
 
             # Compute balanced loss with adaptive controller support
             loss_dict = self.compute_balanced_loss_mixed(
-                decoder_loss, cross_modal_loss, vision_loss, memory_loss, 
+                decoder_loss, cross_modal_loss, vision_loss, memory_loss,
                 step, adaptive_controller, has_vision, grpo_reasoning_loss
             )
 
@@ -1515,7 +1592,8 @@ class BitMarModel(nn.Module):
             'logits': decoder_outputs['logits'],
             'text_features': text_features,
             'vision_latent': vision_latent_masked,  # Return masked version
-            'fused_features': reasoning_enhanced_features,  # Return reasoning-enhanced features
+            # Return reasoning-enhanced features
+            'fused_features': reasoning_enhanced_features,
             'episode': episode,
             'retrieved_memory': retrieved_memory,
             'cross_attention': cross_attention,
@@ -1540,17 +1618,17 @@ class BitMarModel(nn.Module):
         """
         if adaptive_controller is None:
             return {'text_encoder_frozen': False, 'vision_encoder_frozen': False}
-        
+
         freeze_states = adaptive_controller.get_encoder_freeze_states()
-        
+
         # Freeze/unfreeze text encoder
         for param in self.text_encoder.parameters():
             param.requires_grad = not freeze_states['freeze_text_encoder']
-        
+
         # Freeze/unfreeze vision encoder
         for param in self.vision_encoder.parameters():
             param.requires_grad = not freeze_states['freeze_vision_encoder']
-        
+
         return {
             'text_encoder_frozen': freeze_states['freeze_text_encoder'],
             'vision_encoder_frozen': freeze_states['freeze_vision_encoder']
@@ -1646,30 +1724,31 @@ class BitMarModel(nn.Module):
     ) -> torch.Tensor:
         """Create episodes with different handling for vision vs text-only samples"""
         batch_size = text_features.size(0)
-        
+
         # Pool text features
         text_pooled = text_features.mean(dim=1)  # [batch_size, text_dim]
-        
+
         # Project to episode dimension
         text_episode = self.text_to_episode(text_pooled)
         vision_episode = self.vision_to_episode(vision_latent)
-        
+
         # For text-only samples, use only text features
         # For multimodal samples, combine text and vision
         episode = torch.zeros_like(text_episode)
-        
+
         # Text-only samples (has_vision == False)
         text_only_mask = ~has_vision
         if text_only_mask.any():
             episode[text_only_mask] = text_episode[text_only_mask]
-        
+
         # Multimodal samples (has_vision == True)
         multimodal_mask = has_vision
         if multimodal_mask.any():
             # Combine text and vision for multimodal samples
-            combined = text_episode[multimodal_mask] + vision_episode[multimodal_mask]
+            combined = text_episode[multimodal_mask] + \
+                vision_episode[multimodal_mask]
             episode[multimodal_mask] = combined
-            
+
         return episode
 
     def compute_balanced_loss_mixed(
@@ -1681,44 +1760,48 @@ class BitMarModel(nn.Module):
         step: int,
         adaptive_controller=None,
         has_vision: torch.Tensor = None,
-        grpo_reasoning_loss: Optional[torch.Tensor] = None  # NEW: GRPO reasoning loss
+        # NEW: GRPO reasoning loss
+        grpo_reasoning_loss: Optional[torch.Tensor] = None
     ) -> Dict[str, torch.Tensor]:
         """Compute balanced loss for mixed vision/text batches with GRPO reasoning"""
-        
+
         # Base loss weights from config
         text_weight = self.config.get('text_generation_loss_weight', 1.0)
         cross_modal_weight = self.config.get('cross_modal_loss_weight', 1.0)
         memory_weight = self.config.get('memory_regularization_weight', 0.1)
-        grpo_reasoning_weight = self.config.get('grpo_reasoning', {}).get('loss_weight', 0.2)  # NEW
-        
+        grpo_reasoning_weight = self.config.get(
+            'grpo_reasoning', {}).get('loss_weight', 0.2)  # NEW
+
         # Adjust cross-modal weight based on vision availability
         if has_vision is not None:
             vision_ratio = has_vision.float().mean().item()
             # Scale cross-modal loss by the proportion of samples with vision
             cross_modal_weight = cross_modal_weight * vision_ratio
-        
+
         # Apply adaptive loss rebalancing if controller is available
         if adaptive_controller is not None:
             controller_info = adaptive_controller.get_loss_multipliers()
-            cross_modal_weight *= controller_info.get('cross_modal_weight_multiplier', 1.0)
-        
+            cross_modal_weight *= controller_info.get(
+                'cross_modal_weight_multiplier', 1.0)
+
         # Compute total loss
         total_loss = text_weight * decoder_loss
-        
+
         if cross_modal_loss is not None and cross_modal_loss.item() > 0:
             total_loss = total_loss + cross_modal_weight * cross_modal_loss
-        
+
         if vision_loss is not None:
-            vision_weight = self.config.get('vision_reconstruction_weight', 0.1)
+            vision_weight = self.config.get(
+                'vision_reconstruction_weight', 0.1)
             total_loss = total_loss + vision_weight * vision_loss
-            
+
         if memory_loss is not None:
             total_loss = total_loss + memory_weight * memory_loss
-            
+
         # NEW: Add GRPO reasoning loss
         if grpo_reasoning_loss is not None:
             total_loss = total_loss + grpo_reasoning_weight * grpo_reasoning_loss
-        
+
         # Return loss breakdown
         loss_dict = {
             'total_loss': total_loss,
@@ -1729,14 +1812,14 @@ class BitMarModel(nn.Module):
             'memory_weight': memory_weight,
             'grpo_reasoning_weight': grpo_reasoning_weight  # NEW
         }
-        
+
         if vision_loss is not None:
             loss_dict['vision_loss'] = vision_loss
         if memory_loss is not None:
             loss_dict['memory_loss'] = memory_loss
         if grpo_reasoning_loss is not None:
             loss_dict['grpo_reasoning_loss'] = grpo_reasoning_loss  # NEW
-            
+
         return loss_dict
 
     def extract_robot_selections(
@@ -1746,11 +1829,11 @@ class BitMarModel(nn.Module):
     ) -> List[str]:
         """
         Extract human-readable robot selections from model outputs
-        
+
         Args:
             outputs: Model forward outputs containing GRPO reasoning results
             threshold: Probability threshold for robot selection
-            
+
         Returns:
             List of robot selection strings for each sample in batch
         """
@@ -1758,43 +1841,43 @@ class BitMarModel(nn.Module):
             # No GRPO reasoning available, return placeholder
             batch_size = outputs['logits'].size(0)
             return ["No robot reasoning available"] * batch_size
-        
+
         grpo_output = outputs['grpo_reasoning_output']
-        
+
         if 'robot_selection' not in grpo_output:
             batch_size = outputs['logits'].size(0)
             return ["Robot reasoning failed"] * batch_size
-        
+
         robot_probs = grpo_output['robot_selection']  # [batch_size, 6]
-        
+
         # Use the GRPO reasoning module's extraction method
         if self.grpo_reasoning is not None:
             return self.grpo_reasoning.extract_robot_selection_text(robot_probs, threshold)
         else:
             # Fallback extraction
             robot_names = [
-                "Drone", "Underwater Robot", "Humanoid", 
+                "Drone", "Underwater Robot", "Humanoid",
                 "Robot with Wheels", "Robot with Legs", "No Robot"
             ]
-            
+
             batch_size = robot_probs.size(0)
             selections = []
-            
+
             for batch_idx in range(batch_size):
                 selected_robots = []
                 probs = robot_probs[batch_idx]
-                
+
                 for robot_idx, prob in enumerate(probs):
                     if prob > threshold and robot_idx < 5:  # Exclude "No Robot"
                         selected_robots.append(robot_names[robot_idx])
-                
+
                 if not selected_robots:
                     # If no robot meets threshold, select the highest probability one
                     max_idx = torch.argmax(probs[:5])  # Exclude "No Robot"
                     selected_robots.append(robot_names[max_idx])
-                
+
                 selections.append(", ".join(selected_robots))
-            
+
             return selections
 
     def get_reasoning_analysis(
@@ -1803,46 +1886,51 @@ class BitMarModel(nn.Module):
     ) -> Dict[str, any]:
         """
         Get detailed analysis of GRPO reasoning outputs
-        
+
         Args:
             outputs: Model forward outputs containing GRPO reasoning results
-            
+
         Returns:
             Dict containing reasoning analysis
         """
         if 'grpo_reasoning_output' not in outputs or outputs['grpo_reasoning_output'] is None:
             return {"reasoning_available": False}
-        
+
         grpo_output = outputs['grpo_reasoning_output']
-        
+
         analysis = {
             "reasoning_available": True,
             "robot_selections": self.extract_robot_selections(outputs),
         }
-        
+
         # Add reasoning quality if available
         if 'reasoning_quality' in grpo_output:
             quality = grpo_output['reasoning_quality']  # [batch_size, 4]
-            quality_labels = ['coherence', 'relevance', 'completeness', 'accuracy']
-            
+            quality_labels = ['coherence', 'relevance',
+                              'completeness', 'accuracy']
+
             analysis['reasoning_quality'] = {}
             for i, label in enumerate(quality_labels):
                 analysis['reasoning_quality'][label] = quality[:, i].mean().item()
-        
+
         # Add thought scores if available
         if 'thought_scores' in grpo_output:
-            thought_scores = grpo_output['thought_scores']  # [batch_size, steps, 1]
-            analysis['thought_progression'] = thought_scores.mean(dim=0).squeeze(-1).tolist()
-        
+            # [batch_size, steps, 1]
+            thought_scores = grpo_output['thought_scores']
+            analysis['thought_progression'] = thought_scores.mean(
+                dim=0).squeeze(-1).tolist()
+
         # Add robot probabilities
         if 'robot_selection' in grpo_output:
             robot_probs = grpo_output['robot_selection']  # [batch_size, 6]
-            robot_names = ["Drone", "Underwater Robot", "Humanoid", "Robot with Wheels", "Robot with Legs", "No Robot"]
-            
+            robot_names = ["Drone", "Underwater Robot", "Humanoid",
+                           "Robot with Wheels", "Robot with Legs", "No Robot"]
+
             analysis['robot_probabilities'] = {}
             for i, name in enumerate(robot_names):
-                analysis['robot_probabilities'][name] = robot_probs[:, i].mean().item()
-        
+                analysis['robot_probabilities'][name] = robot_probs[:,
+                                                                    i].mean().item()
+
         return analysis
 
 

@@ -7,7 +7,101 @@ BitMar is a **Vision-Language Episodic Memory Transformer** with integrated GRPO
 
 ## 🌟 Key Features
 
-- **GRPO Reasoning**: Tiny-R1 style chain-of-thought reasoning with policy optimization
+- **GRP- Carbon tracking prevents excessive resource consumption
+- WandB logging includes security metrics monitoring
+- Configuration validation ensures only safe hyperparameters are used
+
+These security measures ensure BitMar operates safely in production environments while maintaining high performance and preventing common attack vectors like adversarial inputs, resource exhaustion, and model manipulation.
+
+## 🔒 Security & Robustness Features
+
+BitMar implements comprehensive security measures to ensure stable and safe operation in production environments:
+
+### 🛡️ Numerical Stability Protection
+
+**BitNet 1.58-bit Quantization Hardening**:
+
+- Ternary quantization uses fixed thresholds (`2/3`) to prevent manipulation through adversarial weight perturbations
+- Straight-through estimator maintains gradient flow security during training
+- Quantization parameters are registered as buffers to prevent unauthorized modification
+
+### 🔍 Input Validation & Dimension Safety
+
+**Strict Dimension Validation**:
+
+- All attention mechanisms validate query, key, and value tensor dimensions before processing
+- Cross-modal fusion validates vision and text feature compatibility
+- Memory system validates episode dimensions against expected schemas
+- GRPO reasoning validates input feature dimensions for robot selection
+
+**Runtime Checks**:
+
+- Memory loading includes metadata validation to prevent corrupted or malicious memory injection
+- Vision feature dimensions are validated against model expectations
+- Attention mask shapes are verified and properly broadcast to prevent tensor misalignment
+
+### 🧠 Memory System Security
+
+**Episodic Memory Protection**:
+
+- Memory slot access is bounded by predefined limits (32 slots by default)
+- LRU (Least Recently Used) eviction prevents memory overflow attacks
+- Cross-modal memory queries include dimension compatibility checks
+- Memory persistence includes metadata verification to prevent tampering
+
+**Memory Isolation**:
+
+- Each episode is stored with integrity checks
+- Memory retrieval includes attention-based validation
+- External memory loading includes compatibility verification before integration
+
+### 🤖 GRPO Reasoning Security
+
+**Robot Selection Validation**:
+
+- Selection probabilities are normalized and clamped to valid ranges (`0-1`)
+- Confidence thresholds prevent low-quality robot selections (minimum `0.3`)
+- Chain-of-thought generation includes quality scoring to detect malformed reasoning
+- Policy networks include value function validation to prevent reward hacking
+
+**Reasoning Quality Assurance**:
+
+- Multi-step reasoning includes coherence, relevance, completeness, and accuracy validation
+- Temperature controls prevent both overly deterministic and overly random selections
+- LSTM continuity maintains reasoning state integrity across steps
+
+### ⚡ Production Safety Features
+
+**Resource Management**:
+
+- GPU memory is managed with automatic cleanup and error handling
+- Training includes gradient norm monitoring to detect instability
+- Model checkpoint validation ensures integrity before loading
+- Background processes include proper exception handling
+
+**Error Recovery**:
+
+- Graceful degradation when optional components (GRPO) are unavailable
+- Comprehensive logging for security event monitoring
+- Automatic fallback mechanisms for failed operations
+- Input sanitization prevents malformed data from causing crashes
+
+**Model Integrity**:
+
+- Hugging Face integration includes upload verification
+- Carbon tracking prevents excessive resource consumption
+- WandB logging includes security metrics monitoring
+- Configuration validation ensures only safe hyperparameters are used
+
+These security measures ensure BitMar operates safely in production environments while maintaining high performance and preventing common attack vectors like adversarial inputs, resource exhaustion, and model manipulation.
+
+## 🙏 Acknowledgments
+
+- BitNet quantization for efficient neural networks
+- DiNOv2 for robust vision features
+- FIBER for cross-modal fusion inspiration
+- Tiny-R1 for chain-of-thought reasoning patterns
+- GRPO for policy optimization in reasoning tasks: Tiny-R1 style chain-of-thought reasoning with policy optimization
 - **Robot Selection Intelligence**: Multi-step reasoning for selecting appropriate robots (Drone, Underwater Robot, Humanoid, Robot with Wheels, Robot with Legs)
 - **Cross-Modal Fusion**: FIBER-inspired architecture for vision-language understanding
 - **BitNet Quantization**: 1.58-bit quantized components for efficient inference
@@ -129,7 +223,92 @@ BitMar Model with GRPO Reasoning Pipeline:
 └────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## 🤖 Robot Selection Capabilities
+## � GRPO-Based Chain-of-Thought Reasoning
+
+BitMar implements a novel **Generalized Reinforcement Learning from Policy Optimization (GRPO)** reasoning system that combines chain-of-thought generation with policy gradient optimization for robot selection tasks. This implementation bridges symbolic reasoning with neural policy learning, enabling the model to perform structured multi-step reasoning while optimizing for task-specific outcomes.
+
+### Theoretical Foundation
+
+The GRPO reasoning module operates on the principle of **sequential decision-making under uncertainty** with **policy gradient optimization**. Unlike traditional chain-of-thought approaches that rely purely on next-token prediction, our system treats reasoning as a **Markov Decision Process (MDP)** where each reasoning step represents a state transition guided by learned policies.
+
+**Core Architecture Components:**
+
+- **Sequential Reasoning States**: The system maintains a sequence of hidden states $h_t \in \mathbb{R}^d$ across $T$ reasoning steps, where each state encodes accumulated reasoning knowledge
+- **Policy Networks**: Separate policy heads for reasoning token generation and robot selection actions, enabling dual optimization objectives
+- **Value Function**: Estimates the expected future reward for each reasoning state, providing baseline for advantage computation
+- **Attention-Based Robot Reasoning**: Multi-head attention mechanism that grounds robot selection in visual and textual context
+
+### Mathematical Formulation
+
+The GRPO reasoning process can be formalized through two key equations:
+
+**1. Chain-of-Thought State Evolution:**
+
+$$h_{t+1} = \text{LSTM}(h_t, \phi(c, v_t)) + \text{Refine}(\text{concat}(h_t, \text{Generate}(h_t)))$$
+
+Where:
+- $h_t$ is the reasoning state at step $t$
+- $\phi(c, v_t)$ represents the fusion of context $c$ and vision features $v_t$
+- $\text{Generate}(h_t)$ produces intermediate thoughts through a BitNet-quantized generator
+- $\text{Refine}(\cdot)$ combines previous state with new thoughts for state refinement
+
+**2. GRPO Policy Optimization:**
+
+$$\mathcal{L}_{\text{GRPO}} = \mathbb{E}_{s,a \sim \pi} \left[ -\log \pi(a|s) \cdot A(s,a) \right] + \lambda_v \|V(s) - R\|^2 - \lambda_h H(\pi)$$
+
+Where:
+- $\pi(a|s)$ is the robot selection policy given reasoning state $s$
+- $A(s,a) = R - V(s)$ represents the advantage function
+- $V(s)$ is the learned value function for state estimation
+- $H(\pi)$ provides entropy regularization for exploration
+- $\lambda_v, \lambda_h$ are loss weighting coefficients
+
+### Implementation Architecture
+
+**Multi-Step Reasoning Pipeline:**
+
+1. **Context Encoding**: Vision-language features from FIBER fusion are encoded into initial reasoning state
+2. **LSTM-Based Continuity**: Bidirectional LSTM maintains reasoning coherence across steps with hidden state persistence
+3. **Thought Generation**: BitNet-quantized generators produce intermediate reasoning thoughts with quality scoring
+4. **Robot Attention**: Multi-head attention mechanism evaluates robot capabilities against current reasoning context
+5. **Policy Optimization**: Separate policy and value networks optimize for both reasoning quality and robot selection accuracy
+
+**Quality Assessment Framework:**
+
+The system evaluates reasoning quality across four dimensions:
+- **Coherence**: Logical consistency between reasoning steps
+- **Relevance**: Alignment with task requirements and visual context  
+- **Completeness**: Coverage of important decision factors
+- **Accuracy**: Correctness of final robot selection
+
+**Reward Signal Integration:**
+
+- **Task Success Rewards**: Direct feedback from robot selection accuracy
+- **Reasoning Quality Rewards**: Multi-dimensional assessment of thought quality
+- **Advantage Estimation**: Temporal difference learning for value function updates
+- **Entropy Regularization**: Encourages exploration during policy learning
+
+### Scientific Contributions
+
+**Novel Aspects of Our GRPO Implementation:**
+
+- **Hybrid Symbolic-Neural Reasoning**: Combines structured reasoning steps with neural policy optimization
+- **Multi-Modal Grounding**: Integrates vision, text, and robot capability knowledge in reasoning chain
+- **Adaptive Step Weighting**: Dynamic importance weighting of reasoning steps based on learned value functions
+- **Quality-Aware Training**: Explicit modeling and optimization of reasoning quality dimensions
+- **Quantized Reasoning Components**: BitNet quantization applied to reasoning networks for efficiency
+
+**Advantages Over Standard Chain-of-Thought:**
+
+- **Goal-Oriented Optimization**: Direct optimization for task outcomes rather than just linguistic fluency
+- **Uncertainty Quantification**: Value functions provide confidence estimates for reasoning decisions
+- **Multi-Objective Learning**: Simultaneous optimization of reasoning quality and task performance
+- **Adaptive Exploration**: Entropy regularization enables discovery of novel reasoning strategies
+- **Cross-Modal Integration**: Seamless integration of visual and textual reasoning context
+
+The GRPO reasoning system represents a significant advancement in neural reasoning architectures, providing both interpretable reasoning chains and optimized task performance through principled reinforcement learning integration.
+
+## �🤖 Robot Selection Capabilities
 
 The GRPO reasoning module can intelligently select robots based on task requirements:
 
@@ -525,10 +704,90 @@ Tiny-BitGen/
 
 This project is licensed under the MIT License - see the LICENSE file for details.
 
-## 🙏 Acknowledgments
+## � Security & Robustness Features
+
+BitMar implements comprehensive security measures to ensure stable and safe operation in production environments:
+
+### 🛡️ Numerical Stability Protection
+
+**Quantization Security**:
+- **Scale Clamping**: Weight and activation scales are bounded between `1e-5` and `1e3` to prevent extreme scaling that could lead to numerical instability or overflow attacks
+- **Gradient Clipping**: Weight normalization is clipped to `±10.0` range to prevent exploding gradients and potential DoS through resource exhaustion
+- **Division by Zero Protection**: All quantization operations include safeguards against division by zero with minimum thresholds (`1e-8`)
+- **Activation Bounds**: Input activations are clamped to `±1e6` range to prevent overflow and numerical instability
+
+**BitNet 1.58-bit Quantization Hardening**:
+- Ternary quantization uses fixed thresholds (`2/3`) to prevent manipulation through adversarial weight perturbations
+- Straight-through estimator maintains gradient flow security during training
+- Quantization parameters are registered as buffers to prevent unauthorized modification
+
+### 🔍 Input Validation & Dimension Safety
+
+**Strict Dimension Validation**:
+- All attention mechanisms validate query, key, and value tensor dimensions before processing
+- Cross-modal fusion validates vision and text feature compatibility
+- Memory system validates episode dimensions against expected schemas
+- GRPO reasoning validates input feature dimensions for robot selection
+
+**Runtime Checks**:
+- Memory loading includes metadata validation to prevent corrupted or malicious memory injection
+- Vision feature dimensions are validated against model expectations
+- Attention mask shapes are verified and properly broadcast to prevent tensor misalignment
+
+### 🧠 Memory System Security
+
+**Episodic Memory Protection**:
+- Memory slot access is bounded by predefined limits (32 slots by default)
+- LRU (Least Recently Used) eviction prevents memory overflow attacks
+- Cross-modal memory queries include dimension compatibility checks
+- Memory persistence includes metadata verification to prevent tampering
+
+**Memory Isolation**:
+- Each episode is stored with integrity checks
+- Memory retrieval includes attention-based validation
+- External memory loading includes compatibility verification before integration
+
+### 🤖 GRPO Reasoning Security
+
+**Robot Selection Validation**:
+- Selection probabilities are normalized and clamped to valid ranges (`0-1`)
+- Confidence thresholds prevent low-quality robot selections (minimum `0.3`)
+- Chain-of-thought generation includes quality scoring to detect malformed reasoning
+- Policy networks include value function validation to prevent reward hacking
+
+**Reasoning Quality Assurance**:
+- Multi-step reasoning includes coherence, relevance, completeness, and accuracy validation
+- Temperature controls prevent both overly deterministic and overly random selections
+- LSTM continuity maintains reasoning state integrity across steps
+
+### ⚡ Production Safety Features
+
+**Resource Management**:
+- GPU memory is managed with automatic cleanup and error handling
+- Training includes gradient norm monitoring to detect instability
+- Model checkpoint validation ensures integrity before loading
+- Background processes include proper exception handling
+
+**Error Recovery**:
+- Graceful degradation when optional components (GRPO) are unavailable
+- Comprehensive logging for security event monitoring
+- Automatic fallback mechanisms for failed operations
+- Input sanitization prevents malformed data from causing crashes
+
+**Model Integrity**:
+- Hugging Face integration includes upload verification
+- Carbon tracking prevents excessive resource consumption
+- WandB logging includes security metrics monitoring
+- Configuration validation ensures only safe hyperparameters are used
+
+These security measures ensure BitMar operates safely in production environments while maintaining high performance and preventing common attack vectors like adversarial inputs, resource exhaustion, and model manipulation.
+
+## �🙏 Acknowledgments
 
 - BitNet quantization for efficient neural networks
 - DiNOv2 for robust vision features
 - FIBER for cross-modal fusion inspiration
 - Tiny-R1 for chain-of-thought reasoning patterns
 - GRPO for policy optimization in reasoning tasks
+ 
+ 

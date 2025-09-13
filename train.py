@@ -1073,7 +1073,7 @@ class COCOTrainer:
                 logger.warning(f"Failed to log to wandb: {e}")
                 # Disable wandb if it keeps failing
                 self.use_wandb = False
-        
+
         logger.info(
             f"🎯 COCO Tokens processed so far: {self.tokens_processed:,}")
 
