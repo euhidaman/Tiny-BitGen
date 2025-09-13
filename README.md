@@ -114,7 +114,7 @@ These security measures ensure BitMar operates safely in production environments
 
 ## 🏗️ Architecture
 
-```
+```text
 BitMar Model with GRPO Reasoning Pipeline:
 
 ┌────────────────────────────────────────────────────────────────────────────────┐
@@ -223,7 +223,7 @@ BitMar Model with GRPO Reasoning Pipeline:
 └────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## � GRPO-Based Chain-of-Thought Reasoning
+## 🧠 GRPO-Based Chain-of-Thought Reasoning
 
 BitMar implements a novel **Generalized Reinforcement Learning from Policy Optimization (GRPO)** reasoning system that combines chain-of-thought generation with policy gradient optimization for robot selection tasks. This implementation bridges symbolic reasoning with neural policy learning, enabling the model to perform structured multi-step reasoning while optimizing for task-specific outcomes.
 
