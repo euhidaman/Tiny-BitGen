@@ -139,7 +139,7 @@ The GRPO reasoning module operates on the principle of **sequential decision-mak
 
 **Core Architecture Components:**
 
-- **Sequential Reasoning States**: The system maintains a sequence of hidden states $h_t \in \mathbb{R}^d$ across $T$ reasoning steps, where each state encodes accumulated reasoning knowledge
+- **Sequential Reasoning States**: The system maintains a sequence of hidden states `h_t ∈ ℝᵈ` across `T` reasoning steps, where each state encodes accumulated reasoning knowledge
 - **Policy Networks**: Separate policy heads for reasoning token generation and robot selection actions, enabling dual optimization objectives
 - **Value Function**: Estimates the expected future reward for each reasoning state, providing baseline for advantage computation
 - **Attention-Based Robot Reasoning**: Multi-head attention mechanism that grounds robot selection in visual and textual context
@@ -150,24 +150,28 @@ The GRPO reasoning process can be formalized through two key equations:
 
 **1. Chain-of-Thought State Evolution:**
 
-$$h_{t+1} = \text{LSTM}(h_t, \phi(c, v_t)) + \text{Refine}(\text{concat}(h_t, \text{Generate}(h_t)))$$
+```math
+h_{t+1} = LSTM(h_t, φ(c, v_t)) + Refine(concat(h_t, Generate(h_t)))
+```
 
 Where:
-- $h_t$ is the reasoning state at step $t$
-- $\phi(c, v_t)$ represents the fusion of context $c$ and vision features $v_t$
-- $\text{Generate}(h_t)$ produces intermediate thoughts through a BitNet-quantized generator
-- $\text{Refine}(\cdot)$ combines previous state with new thoughts for state refinement
+- `h_t` is the reasoning state at step `t`
+- `φ(c, v_t)` represents the fusion of context `c` and vision features `v_t`
+- `Generate(h_t)` produces intermediate thoughts through a BitNet-quantized generator
+- `Refine(·)` combines previous state with new thoughts for state refinement
 
 **2. GRPO Policy Optimization:**
 
-$$\mathcal{L}_{\text{GRPO}} = \mathbb{E}_{s,a \sim \pi} \left[ -\log \pi(a|s) \cdot A(s,a) \right] + \lambda_v \|V(s) - R\|^2 - \lambda_h H(\pi)$$
+```math
+L_GRPO = 𝔼_{s,a~π}[-log π(a|s) · A(s,a)] + λ_v ||V(s) - R||² - λ_h H(π)
+```
 
 Where:
-- $\pi(a|s)$ is the robot selection policy given reasoning state $s$
-- $A(s,a) = R - V(s)$ represents the advantage function
-- $V(s)$ is the learned value function for state estimation
-- $H(\pi)$ provides entropy regularization for exploration
-- $\lambda_v, \lambda_h$ are loss weighting coefficients
+- `π(a|s)` is the robot selection policy given reasoning state `s`
+- `A(s,a) = R - V(s)` represents the advantage function
+- `V(s)` is the learned value function for state estimation
+- `H(π)` provides entropy regularization for exploration
+- `λ_v, λ_h` are loss weighting coefficients
 
 ### Implementation Architecture
 
