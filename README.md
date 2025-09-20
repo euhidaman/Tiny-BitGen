@@ -146,32 +146,14 @@ The GRPO reasoning module operates on the principle of **sequential decision-mak
 
 ### Mathematical Formulation
 
-The GRPO reasoning process can be formalized through two key equations:
 
-**1. Chain-of-Thought State Evolution:**
+The GRPO reasoning process can be formalized through two key equations (omitted for GitHub compatibility):
 
-```math
-h_{t+1} = LSTM(h_t, φ(c, v_t)) + Refine(concat(h_t, Generate(h_t)))
-```
+**Chain-of-Thought State Evolution:**
+*Formula omitted for compatibility.*
 
-Where:
-- `h_t` is the reasoning state at step `t`
-- `φ(c, v_t)` represents the fusion of context `c` and vision features `v_t`
-- `Generate(h_t)` produces intermediate thoughts through a BitNet-quantized generator
-- `Refine(·)` combines previous state with new thoughts for state refinement
-
-**2. GRPO Policy Optimization:**
-
-```math
-L_GRPO = 𝔼_{s,a~π}[-log π(a|s) · A(s,a)] + λ_v ||V(s) - R||² - λ_h H(π)
-```
-
-Where:
-- `π(a|s)` is the robot selection policy given reasoning state `s`
-- `A(s,a) = R - V(s)` represents the advantage function
-- `V(s)` is the learned value function for state estimation
-- `H(π)` provides entropy regularization for exploration
-- `λ_v, λ_h` are loss weighting coefficients
+**GRPO Policy Optimization:**
+*Formula omitted for compatibility.*
 
 ### Implementation Architecture
 
