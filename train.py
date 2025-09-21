@@ -100,6 +100,15 @@ except ImportError:
     ATTENTION_SINKS_AVAILABLE = False
     logger.warning("⚠️  Attention Sinks integration not available")
 
+# Try to import robot selection dataset
+try:
+    from src.robot_selection_dataset import create_robot_selection_data_module, compute_robot_selection_rewards
+    ROBOT_SELECTION_AVAILABLE = True
+    print("✅ Robot selection dataset support available")
+except ImportError:
+    ROBOT_SELECTION_AVAILABLE = False
+    print("⚠️  Robot selection dataset support not available")
+
 
 class COCOTrainer:
     """COCO trainer for vision-language training"""
@@ -208,8 +217,41 @@ class COCOTrainer:
         # Setup Hugging Face Hub integration
         self.setup_huggingface_hub()
 
+        # Setup carbon tracking
+        self.setup_carbon_tracking()
+
         logger.info(f"🎯 COCO trainer initialized")
         logger.info(f"Device: {self.device}")
+
+    def setup_carbon_tracking(self):
+        """Setup carbon emissions tracking"""
+        carbon_config = self.config.get('carbon_tracking', {})
+
+        if not carbon_config.get('enabled', False):
+            self.carbon_tracker = None
+            logger.info("🌱 Carbon tracking disabled in configuration")
+            return
+
+        try:
+            from codecarbon import EmissionsTracker
+
+            self.carbon_tracker = EmissionsTracker(
+                project_name=carbon_config.get('project_name', 'BitMar-COCO-Training'),
+                output_dir=carbon_config.get('output_dir', './emissions'),
+                country_iso_code=carbon_config.get('country_iso_code', 'USA'),
+                log_level='warning'  # Reduce verbose logging
+            )
+            logger.info("🌱 Carbon emissions tracking initialized")
+            logger.info(f"  • Project: {carbon_config.get('project_name', 'BitMar-COCO-Training')}")
+            logger.info(f"  • Output dir: {carbon_config.get('output_dir', './emissions')}")
+
+        except ImportError:
+            logger.warning("⚠️  codecarbon not available - carbon tracking disabled")
+            logger.warning("   Install with: pip install codecarbon")
+            self.carbon_tracker = None
+        except Exception as e:
+            logger.warning(f"⚠️  Failed to initialize carbon tracking: {e}")
+            self.carbon_tracker = None
 
     def setup_directories(self):
         """Create output directories"""
@@ -1578,333 +1620,136 @@ class COCOTrainer:
             logger.warning(f"Cross-modal similarity computation failed: {e}")
             return 0.0
 
-    def train(self):
-        """Main training loop with token awareness"""
-        logger.info("🚀 Starting 100M token training...")
-
-        # Start carbon tracking
-        if self.carbon_tracker:
-            self.carbon_tracker.start()
-
-        # Setup model and data
-        self.setup_model_and_data()
+    def setup_robot_selection_data(self):
+        """Setup robot selection data loaders for text-only reasoning"""
+        if not ROBOT_SELECTION_AVAILABLE:
+            self.robot_train_loader = None
+            self.robot_val_loader = None
+            logger.warning("⚠️  Robot selection dataset not available")
+            return
 
         try:
-            for epoch in range(self.config['training']['max_epochs']):
-                logger.info(
-                    f"Starting epoch {epoch + 1}/{self.config['training']['max_epochs']}")
+            # Paths to robot selection datasets
+            single_robot_path = "D:/BabyLM/robot_selection_data/data/Single-Robot-Selection/single_robot_selection_dataset.json"
+            multi_robot_path = "D:/BabyLM/robot_selection_data/data/Multi-Robot-Selection/multi_robot_selection_dataset.json"
 
-                self.current_epoch = epoch
-                epoch_metrics = self.train_epoch(epoch)
+            # Check if files exist
+            if not Path(single_robot_path).exists():
+                logger.warning(f"⚠️  Single robot dataset not found: {single_robot_path}")
+                self.robot_train_loader = None
+                self.robot_val_loader = None
+                return
 
-                # Save checkpoint after each epoch
-                self.save_token_checkpoint()
+            if not Path(multi_robot_path).exists():
+                logger.warning(f"⚠️  Multi robot dataset not found: {multi_robot_path}")
+                self.robot_train_loader = None
+                self.robot_val_loader = None
+                return
 
-                # Upload checkpoint to Hugging Face Hub after each epoch
-                if self.hf_hub_enabled and self.hf_upload_after_epoch:
-                    self.upload_checkpoint_to_hf(epoch)
+            # Create robot selection data loaders
+            self.robot_train_loader, self.robot_val_loader = create_robot_selection_data_module(
+                single_robot_path=single_robot_path,
+                multi_robot_path=multi_robot_path,
+                tokenizer_name=self.config['data'].get('tokenizer_name', 'gpt2'),
+                batch_size=self.config['training']['batch_size'] // 2,  # Smaller batch for robot reasoning
+                max_seq_length=self.config['data'].get('max_seq_length', 512),
+                max_samples=200,  # Limit robot samples per epoch
+                include_multi_robot=True,
+                num_workers=2
+            )
 
-                # Run fast evaluation after each epoch if enabled
-                if hasattr(self, 'enable_fast_eval') and self.enable_fast_eval:
-                    self.run_fast_evaluation_after_epoch(epoch)
+            logger.info("🤖 Robot selection data loaders created successfully")
+            logger.info(f"   • Robot batch size: {self.config['training']['batch_size'] // 2}")
+            logger.info(f"   • Max robot samples per epoch: 200")
 
-                # Log epoch summary to wandb with error handling
-                if self.use_wandb:
-                    try:
-                        wandb.log({
-                            'epoch/train_loss': epoch_metrics['train_loss'],
-                            'epoch/cross_modal_similarity': epoch_metrics['cross_modal_similarity'],
-                            'epoch/tokens_processed': self.tokens_processed,
-                            'epoch/tokens_in_epoch': epoch_metrics['tokens_in_epoch'],
-                            'epoch/number': epoch
-                        }, step=self.global_step)
-                    except Exception as e:
-                        logger.warning(
-                            f"Failed to log epoch summary to wandb: {e}")
-                        self.use_wandb = False
-
-                # Continue training for all epochs in COCO mode
-
-        except KeyboardInterrupt:
-            logger.info("Training interrupted by user")
         except Exception as e:
-            logger.error(f"Training failed with error: {e}")
-            raise
-        finally:
-            # Stop carbon tracking
-            if self.carbon_tracker:
-                emissions = self.carbon_tracker.stop()
-                logger.info(f"🌱 Carbon emissions: {emissions:.6f} kg CO2")
+            logger.error(f"❌ Failed to setup robot selection data: {e}")
+            self.robot_train_loader = None
+            self.robot_val_loader = None
 
-            # Final checkpoint
-            self.save_token_checkpoint()
-
-            # Upload final model to Hugging Face Hub
-            if self.hf_hub_enabled and self.hf_upload_final_model:
-                self.upload_checkpoint_to_hf(self.current_epoch, final=True)
-
-            # Run full evaluation at the end if enabled
-            if hasattr(self, 'enable_full_eval') and self.enable_full_eval:
-                self.run_full_evaluation_final()
-
-            # Final FLOPS summary and cleanup
-            if self.flops_tracker:
-                try:
-                    # Generate final FLOPS statistics
-                    final_stats = self.flops_tracker.get_summary_stats()
-                    logger.info("🔢 Final FLOPS Summary:")
-                    logger.info(
-                        f"  • Total FLOPS: {final_stats.get('flops_formatted', 'N/A')}")
-                    logger.info(
-                        f"  • Total training time: {final_stats.get('total_time', 0):.1f}s")
-                    logger.info(
-                        f"  • Average FLOPS/step: {self.flops_tracker._format_flops(final_stats.get('avg_flops_per_step', 0))}")
-                    logger.info(
-                        f"  • Average throughput: {final_stats.get('avg_throughput_formatted', 'N/A')}")
-                    logger.info(
-                        f"  • Peak throughput: {self.flops_tracker._format_flops(final_stats.get('peak_throughput', 0))}/s")
-
-                    # Save FLOPS statistics
-                    self.flops_tracker.save_statistics(
-                        "final_flops_statistics.json")
-
-                    # Log to wandb if available
-                    if self.use_wandb:
-                        try:
-                            wandb.log({
-                                'final_flops/total_flops': final_stats.get('total_flops', 0),
-                                'final_flops/avg_flops_per_step': final_stats.get('avg_flops_per_step', 0),
-                                'final_flops/avg_throughput': final_stats.get('avg_throughput', 0),
-                                'final_flops/peak_throughput': final_stats.get('peak_throughput', 0),
-                                'final_flops/total_time': final_stats.get('total_time', 0)
-                            })
-                        except Exception as e:
-                            logger.warning(
-                                f"Failed to log final FLOPS to wandb: {e}")
-
-                    # Cleanup FLOPS tracker
-                    self.flops_tracker.cleanup()
-                    logger.info("✅ FLOPS tracking completed and cleaned up")
-                except Exception as e:
-                    logger.warning(
-                        f"⚠️  Failed to complete FLOPS tracking: {e}")
-
-            # Generate final memory visualization report
-            if self.memory_viz is not None:
-                try:
-                    self.memory_viz.generate_final_report()
-                    logger.info(
-                        "✅ Generated final memory visualization report")
-                except Exception as e:
-                    logger.warning(
-                        f"⚠️  Failed to generate final memory report: {e}")
-
-            # Final token summary
-            logger.info("🎯 Final Token Summary:")
-            logger.info(f"  • Mode: COCO (unlimited tokens)")
-            logger.info(f"  • Processed tokens: {self.tokens_processed:,}")
-            logger.info(
-                f"  • Best cross-modal similarity: {self.best_similarity:.4f}")
-
-            if self.use_wandb:
-                try:
-                    wandb.finish()
-                except Exception as e:
-                    logger.warning(f"Failed to finish wandb run: {e}")
-
-    def run_fast_evaluation_after_epoch(self, epoch: int):
-        """Run fast evaluation after completing an epoch"""
+    def train_robot_reasoning_batch(self, batch: Dict, epoch: int) -> Dict[str, float]:
+        """Train on a single robot selection reasoning batch"""
         try:
-            logger.info(f"🧪 Running fast evaluation after epoch {epoch}")
+            # Move batch to device
+            for k, v in batch.items():
+                if torch.is_tensor(v):
+                    batch[k] = v.to(self.device)
 
-            # Get the checkpoint path for this epoch
-            checkpoint_path = self.checkpoint_dir / \
-                f'checkpoint_epoch_{epoch}_tokens_{self.tokens_processed}.pt'
+            # Get text context from the model's text encoder
+            text_outputs = self.model.text_encoder(
+                input_ids=batch['input_ids'],
+                attention_mask=batch['attention_mask']
+            )
 
-            # Import and run evaluation scripts
-            import subprocess
-            import sys
-
-            eval_results_dir = Path("evaluation_results") / f"epoch_{epoch}"
-            eval_results_dir.mkdir(parents=True, exist_ok=True)
-
-            eval_success = {'2025': False, '2024': False}
-
-            # Run 2025 pipeline (text + multimodal fast evaluation)
-            eval_2025_path = Path("../evaluation-pipeline-2025")
-            if eval_2025_path.exists():
-                try:
-                    cmd = [
-                        sys.executable, "evaluate_bitmar_2025.py",
-                        "--model_path", str(checkpoint_path),
-                        "--eval_type", "fast",
-                        "--evaluation_pipeline_path", str(eval_2025_path),
-                        "--output_dir", str(eval_results_dir / "2025_results")
-                    ]
-
-                    logger.info("Running 2025 pipeline fast evaluation...")
-                    result = subprocess.run(
-                        cmd, capture_output=True, text=True, timeout=3600)
-
-                    if result.returncode == 0:
-                        logger.info(
-                            "✅ 2025 pipeline evaluation completed successfully")
-                        eval_success['2025'] = True
-                    else:
-                        logger.warning(
-                            f"⚠️ 2025 pipeline evaluation failed: {result.stderr}")
-
-                except Exception as e:
-                    logger.warning(f"⚠️ 2025 pipeline evaluation error: {e}")
+            # Use pooled text representation as context
+            if hasattr(text_outputs, 'pooler_output') and text_outputs.pooler_output is not None:
+                text_context = text_outputs.pooler_output
             else:
-                logger.info("⚠️ 2025 evaluation pipeline not found, skipping")
+                # Fallback: mean pool the last hidden states
+                text_context = text_outputs.last_hidden_state.mean(dim=1)
 
-            # Run 2024 pipeline (multimodal only fast evaluation)
-            eval_2024_path = Path("../evaluation-pipeline-2024")
-            if eval_2024_path.exists():
-                try:
-                    cmd = [
-                        sys.executable, "evaluate_bitmar_2024.py",
-                        "--model_path", str(checkpoint_path),
-                        "--eval_type", "fast",
-                        "--evaluation_pipeline_path", str(eval_2024_path),
-                        "--output_dir", str(eval_results_dir / "2024_results")
-                    ]
+            # Generate robot reasoning chain in text-only mode
+            if hasattr(self.model, 'grpo_reasoning') and self.model.grpo_reasoning is not None:
+                reasoning_output = self.model.grpo_reasoning.generate_reasoning_chain(
+                    context=text_context,
+                    vision_features=None,  # No vision for robot selection
+                    task_description=batch['task_descriptions'][0] if batch['task_descriptions'] else None,
+                    reasoning_mode="text_only"
+                )
 
-                    logger.info("Running 2024 pipeline fast evaluation...")
-                    result = subprocess.run(
-                        cmd, capture_output=True, text=True, timeout=3600)
+                # Compute rewards based on robot selection accuracy
+                robot_rewards, reasoning_rewards = compute_robot_selection_rewards(
+                    predictions=reasoning_output['robot_selection']['final_robot_probs'],
+                    labels=batch['robot_labels'],
+                    task_descriptions=batch['task_descriptions']
+                )
 
-                    if result.returncode == 0:
-                        logger.info(
-                            "✅ 2024 pipeline evaluation completed successfully")
-                        eval_success['2024'] = True
-                    else:
-                        logger.warning(
-                            f"⚠️ 2024 pipeline evaluation failed: {result.stderr}")
+                # Compute GRPO loss
+                grpo_loss_dict = self.model.grpo_reasoning.compute_grpo_loss(
+                    reasoning_output=reasoning_output,
+                    robot_rewards=robot_rewards,
+                    reasoning_rewards=reasoning_rewards
+                )
 
-                except Exception as e:
-                    logger.warning(f"⚠️ 2024 pipeline evaluation error: {e}")
+                # Backward pass for robot reasoning
+                robot_loss = grpo_loss_dict['total_loss']
+                robot_loss.backward()
+
+                # Compute accuracy for logging
+                from src.robot_selection_dataset import compute_robot_selection_accuracy
+                accuracy = compute_robot_selection_accuracy(
+                    reasoning_output['robot_selection']['final_robot_probs'],
+                    batch['robot_labels']
+                )
+
+                return {
+                    'robot_loss': robot_loss.item(),
+                    'robot_accuracy': accuracy,
+                    'robot_policy_loss': grpo_loss_dict['policy_loss'].item(),
+                    'robot_value_loss': grpo_loss_dict['value_loss'].item(),
+                    'robot_reasoning_quality': reasoning_rewards.mean().item()
+                }
             else:
-                logger.info("⚠️ 2024 evaluation pipeline not found, skipping")
-
-            # Log evaluation success to wandb
-            if self.use_wandb:
-                try:
-                    wandb.log({
-                        f'epoch_{epoch}/eval_2025_success': eval_success['2025'],
-                        f'epoch_{epoch}/eval_2024_success': eval_success['2024'],
-                    }, step=self.global_step)
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to log evaluation results to wandb: {e}")
-
-            logger.info(f"📊 Fast evaluation completed for epoch {epoch}")
-            logger.info(
-                f"  • 2025 pipeline: {'✅' if eval_success['2025'] else '❌'}")
-            logger.info(
-                f"  • 2024 pipeline: {'✅' if eval_success['2024'] else '❌'}")
+                logger.warning("⚠️  GRPO reasoning module not available")
+                return {
+                    'robot_loss': 0.0,
+                    'robot_accuracy': 0.0,
+                    'robot_policy_loss': 0.0,
+                    'robot_value_loss': 0.0,
+                    'robot_reasoning_quality': 0.0
+                }
 
         except Exception as e:
-            logger.error(f"❌ Fast evaluation failed for epoch {epoch}: {e}")
+            logger.error(f"Robot reasoning training failed: {e}")
+            return {
+                'robot_loss': 0.0,
+                'robot_accuracy': 0.0,
+                'robot_policy_loss': 0.0,
+                'robot_value_loss': 0.0,
+                'robot_reasoning_quality': 0.0
+            }
 
-    def run_full_evaluation_final(self):
-        """Run full evaluation on the final model"""
-        try:
-            logger.info("🧪 Running full evaluation on final model")
-
-            # Get the final checkpoint path
-            final_checkpoint = self.checkpoint_dir / 'latest_checkpoint.pt'
-
-            import subprocess
-            import sys
-
-            eval_results_dir = Path("evaluation_results") / "final"
-            eval_results_dir.mkdir(parents=True, exist_ok=True)
-
-            eval_success = {'2025': False, '2024': False}
-
-            # Run 2025 pipeline (text + multimodal full evaluation)
-            eval_2025_path = Path("../evaluation-pipeline-2025")
-            if eval_2025_path.exists():
-                try:
-                    cmd = [
-                        sys.executable, "evaluate_bitmar_2025.py",
-                        "--model_path", str(final_checkpoint),
-                        "--eval_type", "full",
-                        "--evaluation_pipeline_path", str(eval_2025_path),
-                        "--output_dir", str(eval_results_dir / "2025_results")
-                    ]
-
-                    logger.info("Running 2025 pipeline full evaluation...")
-                    result = subprocess.run(
-                        cmd, capture_output=True, text=True, timeout=7200)  # 2 hours
-
-                    if result.returncode == 0:
-                        logger.info(
-                            "✅ 2025 pipeline full evaluation completed successfully")
-                        eval_success['2025'] = True
-                    else:
-                        logger.warning(
-                            f"⚠️ 2025 pipeline full evaluation failed: {result.stderr}")
-
-                except Exception as e:
-                    logger.warning(
-                        f"⚠️ 2025 pipeline full evaluation error: {e}")
-            else:
-                logger.info("⚠️ 2025 evaluation pipeline not found, skipping")
-
-            # Run 2024 pipeline (multimodal only full evaluation)
-            eval_2024_path = Path("../evaluation-pipeline-2024")
-            if eval_2024_path.exists():
-                try:
-                    cmd = [
-                        sys.executable, "evaluate_bitmar_2024.py",
-                        "--model_path", str(final_checkpoint),
-                        "--eval_type", "full",
-                        "--evaluation_pipeline_path", str(eval_2024_path),
-                        "--output_dir", str(eval_results_dir / "2024_results")
-                    ]
-
-                    logger.info("Running 2024 pipeline full evaluation...")
-                    result = subprocess.run(
-                        cmd, capture_output=True, text=True, timeout=7200)  # 2 hours
-
-                    if result.returncode == 0:
-                        logger.info(
-                            "✅ 2024 pipeline full evaluation completed successfully")
-                        eval_success['2024'] = True
-                    else:
-                        logger.warning(
-                            f"⚠️ 2024 pipeline full evaluation failed: {result.stderr}")
-
-                except Exception as e:
-                    logger.warning(
-                        f"⚠️ 2024 pipeline full evaluation error: {e}")
-            else:
-                logger.info("⚠️ 2024 evaluation pipeline not found, skipping")
-
-            # Log final evaluation success to wandb
-            if self.use_wandb:
-                try:
-                    wandb.log({
-                        'final/eval_2025_success': eval_success['2025'],
-                        'final/eval_2024_success': eval_success['2024'],
-                    })
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to log final evaluation results to wandb: {e}")
-
-            logger.info("📊 Full evaluation completed on final model")
-            logger.info(
-                f"  • 2025 pipeline: {'✅' if eval_success['2025'] else '❌'}")
-            logger.info(
-                f"  • 2024 pipeline: {'✅' if eval_success['2024'] else '❌'}")
-
-        except Exception as e:
-            logger.error(f"❌ Full evaluation failed: {e}")
-
-
+    # ...existing code...
 def main():
     """Main function"""
     parser = argparse.ArgumentParser(
