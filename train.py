@@ -743,7 +743,7 @@ class COCOTrainer:
             tokenizer_name=data_config.get('tokenizer_name', 'gpt2'),
             vision_model_name=data_config.get(
                 'vision_model_name', 'facebook/dinov2-base'),
-            batch_size=self.config['training']['batch_size'],
+            batch_size=data_config['batch_size'],  # Fixed: use data_config instead of self.config['training']
             max_seq_length=data_config.get('max_seq_length', 128),
             max_samples=data_config.get('max_samples', None),
             use_dummy_vision=data_config.get('use_dummy_vision', False),
