@@ -24,6 +24,18 @@ from tqdm import tqdm
 import time
 import traceback
 
+# Setup logging early
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - COCO - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('training_coco.log'),
+        logging.StreamHandler()
+    ],
+    force=True
+)
+logger = logging.getLogger(__name__)
+
 # Hugging Face Hub integration
 try:
     from huggingface_hub import HfApi, create_repo, upload_folder
@@ -37,28 +49,10 @@ except ImportError:
 # Add src to path
 sys.path.append(str(Path(__file__).parent / "src"))
 
-# Setup logging first
-
-
 def setup_logging(config_path: str):
     """Setup logging for COCO training"""
-    log_file = 'training_coco.log'
-    log_prefix = 'COCO'
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format=f'%(asctime)s - {log_prefix} - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(log_file),
-            logging.StreamHandler()
-        ],
-        force=True
-    )
-    return logging.getLogger(__name__)
-
-
-# Will be set up after config is loaded
-logger = None
+    # Logger is already set up globally, just return it
+    return logger
 
 # Import components
 
@@ -1749,7 +1743,6 @@ class COCOTrainer:
                 'robot_reasoning_quality': 0.0
             }
 
-    # ...existing code...
 def main():
     """Main function"""
     parser = argparse.ArgumentParser(
