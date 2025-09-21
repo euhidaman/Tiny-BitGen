@@ -30,8 +30,8 @@ class AttentionHeadAnalyzer:
         self.num_encoder_layers = len(model.text_encoder.layers)
         self.num_decoder_layers = len(model.text_decoder.layers)
         self.num_heads = model.text_encoder.layers[0].attn.num_heads
-        self.fusion_layers = len(model.fusion.cross_attention_layers)
-        
+        self.fusion_layers = len(model.fusion.cross_modal_layers)  # Fixed: use correct attribute name
+
         # Storage for attention patterns over time
         self.attention_history = {
             'encoder': defaultdict(list),
