@@ -972,8 +972,8 @@ class COCOTrainer:
         # Create optimizer
         self.optimizer = AdamW(
             self.model.parameters(),
-            lr=self.config['training']['learning_rate'],
-            weight_decay=self.config['training']['weight_decay'],
+            lr=float(self.config['training']['learning_rate']),
+            weight_decay=float(self.config['training']['weight_decay']),
             betas=(0.9, 0.999),
             eps=1e-8
         )
@@ -1513,7 +1513,6 @@ class COCOTrainer:
                             except Exception as e:
                                 logger.warning(
                                     f"Failed to log to wandb during training: {e}")
-                                self.use_wandb = False
                     else:
                         # Fallback when wandb_logger is not available
                         log_dict = {
