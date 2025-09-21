@@ -12,7 +12,7 @@ import logging
 import json
 import re
 from transformers import AutoTokenizer
-from fiber_fusion import BitNetLinear
+from .fiber_fusion import BitNetLinear
 
 logger = logging.getLogger(__name__)
 
