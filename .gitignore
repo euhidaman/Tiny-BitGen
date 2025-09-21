@@ -151,20 +151,6 @@ wandb/
 # Data files
 data/
 datasets/
-*.csv
-*.json
-*.jsonl
-*.txt
-*.tsv
-*.parquet
-*.arrow
-*.npy
-*.npz
-*.zip
-*.tar
-*.tar.gz
-*.rar
-*.7z
 
 # Model outputs
 outputs/
@@ -213,14 +199,6 @@ attention_analysis/
 evaluation_results/
 training_checkpoints/
 memory_dumps/
-
-# Large dataset files (but keep download instructions)
-*.download_instructions.txt
-!*.download_instructions.txt
-
-# RunPod specific
-.runpod/
-runpod_logs/
 
 # Test outputs
 test_outputs/
