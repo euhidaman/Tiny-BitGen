@@ -1338,11 +1338,18 @@ class COCOTrainer:
                 try:
                     logger.debug(
                         f"Starting forward pass for step {self.global_step}")
+
+                    # Prepare labels for language modeling (next token prediction)
+                    # For COCO captioning, labels are the same as input_ids shifted by one
+                    labels = batch['input_ids'].clone()
+                    # Set padding tokens to -100 (ignored in loss computation)
+                    labels[batch['attention_mask'] == 0] = -100
+
                     outputs = self.model(
                         input_ids=batch['input_ids'],
                         attention_mask=batch['attention_mask'],
                         vision_features=batch['vision_features'],
-                        labels=batch['labels'],
+                        labels=labels,
                         step=self.global_step,
                         has_vision=batch.get('has_vision', torch.ones(
                             batch['input_ids'].size(0), dtype=torch.bool)),
