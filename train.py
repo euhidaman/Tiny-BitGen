@@ -997,7 +997,7 @@ class COCOTrainer:
             self.optimizer,
             T_0=T_0,
             T_mult=T_mult,
-            eta_min=self.config['training']['learning_rate'] *
+            eta_min=float(self.config['training']['learning_rate']) *
             scheduler_config.get('eta_min_ratio', 0.1)
         )
 
