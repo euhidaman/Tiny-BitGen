@@ -229,12 +229,20 @@ class COCOTrainer:
         try:
             from codecarbon import EmissionsTracker
 
-            self.carbon_tracker = EmissionsTracker(
-                project_name=carbon_config.get('project_name', 'BitMar-COCO-Training'),
-                output_dir=carbon_config.get('output_dir', './emissions'),
-                country_iso_code=carbon_config.get('country_iso_code', 'USA'),
-                log_level='warning'  # Reduce verbose logging
-            )
+            # Create tracker with compatible parameters
+            tracker_kwargs = {
+                'project_name': carbon_config.get('project_name', 'BitMar-COCO-Training'),
+                'output_dir': carbon_config.get('output_dir', './emissions'),
+                'log_level': 'warning'  # Reduce verbose logging
+            }
+
+            # Only add country_iso_code if it's supported by this version
+            try:
+                self.carbon_tracker = EmissionsTracker(**tracker_kwargs, country_iso_code=carbon_config.get('country_iso_code', 'USA'))
+            except TypeError:
+                # Fallback for older versions that don't support country_iso_code
+                self.carbon_tracker = EmissionsTracker(**tracker_kwargs)
+
             logger.info("🌱 Carbon emissions tracking initialized")
             logger.info(f"  • Project: {carbon_config.get('project_name', 'BitMar-COCO-Training')}")
             logger.info(f"  • Output dir: {carbon_config.get('output_dir', './emissions')}")
@@ -1742,6 +1750,113 @@ class COCOTrainer:
                 'robot_value_loss': 0.0,
                 'robot_reasoning_quality': 0.0
             }
+
+    def train(self):
+        """Main training loop for COCO mode"""
+        logger.info("🚀 Starting COCO training...")
+
+        # Setup model and data
+        self.setup_model_and_data()
+
+        # Start carbon tracking if enabled
+        if self.carbon_tracker:
+            self.carbon_tracker.start()
+            logger.info("🌱 Carbon emissions tracking started")
+
+        try:
+            # Training loop
+            for epoch in range(self.config['training']['max_epochs']):
+                self.current_epoch = epoch
+
+                logger.info(f"📚 Starting epoch {epoch + 1}/{self.config['training']['max_epochs']}")
+
+                # Train one epoch
+                epoch_metrics = self.train_epoch(epoch)
+
+                # Save checkpoint after each epoch
+                self.save_token_checkpoint()
+
+                # Upload to Hugging Face if enabled
+                if self.hf_hub_enabled and self.hf_upload_after_epoch:
+                    self.upload_checkpoint_to_hf(epoch, final=False)
+
+                # Log epoch summary
+                logger.info(f"✅ Epoch {epoch + 1} completed:")
+                logger.info(f"  • Training loss: {epoch_metrics['train_loss']:.4f}")
+                logger.info(f"  • Cross-modal similarity: {epoch_metrics['cross_modal_similarity']:.4f}")
+                logger.info(f"  • Tokens processed this epoch: {epoch_metrics['tokens_in_epoch']:,}")
+                logger.info(f"  • Total tokens processed: {self.tokens_processed:,}")
+
+                # Log to wandb
+                if self.use_wandb:
+                    try:
+                        wandb.log({
+                            'epoch/train_loss': epoch_metrics['train_loss'],
+                            'epoch/cross_modal_similarity': epoch_metrics['cross_modal_similarity'],
+                            'epoch/tokens_processed': self.tokens_processed,
+                            'epoch/number': epoch + 1
+                        }, step=self.global_step)
+                    except Exception as e:
+                        logger.warning(f"Failed to log epoch metrics to wandb: {e}")
+
+            # Training completed
+            logger.info("🎉 Training completed successfully!")
+
+            # Save final checkpoint
+            self.save_token_checkpoint()
+
+            # Upload final model to Hugging Face if enabled
+            if self.hf_hub_enabled and self.hf_upload_final_model:
+                self.upload_checkpoint_to_hf(self.current_epoch, final=True)
+
+            # Final statistics
+            logger.info(f"📊 Final training statistics:")
+            logger.info(f"  • Total epochs: {self.config['training']['max_epochs']}")
+            logger.info(f"  • Total tokens processed: {self.tokens_processed:,}")
+            logger.info(f"  • Total training steps: {self.global_step}")
+            logger.info(f"  • Best cross-modal similarity: {self.best_similarity:.4f}")
+
+        except KeyboardInterrupt:
+            logger.info("🛑 Training interrupted by user")
+            # Save checkpoint before exiting
+            self.save_token_checkpoint()
+
+        except Exception as e:
+            logger.error(f"❌ Training failed: {e}")
+            # Save checkpoint on failure
+            try:
+                self.save_token_checkpoint()
+            except:
+                pass
+            raise
+
+        finally:
+            # Stop carbon tracking if enabled
+            if self.carbon_tracker:
+                try:
+                    emissions = self.carbon_tracker.stop()
+                    logger.info(f"🌱 Carbon emissions tracking stopped")
+                    logger.info(f"  • Total emissions: {emissions:.6f} kg CO2")
+
+                    if self.use_wandb:
+                        try:
+                            wandb.log({
+                                'carbon/total_emissions_kg': emissions,
+                                'carbon/final': True
+                            }, step=self.global_step)
+                        except Exception as e:
+                            logger.warning(f"Failed to log carbon emissions to wandb: {e}")
+
+                except Exception as e:
+                    logger.warning(f"Failed to stop carbon tracking: {e}")
+
+            # Close wandb run
+            if self.use_wandb:
+                try:
+                    wandb.finish()
+                    logger.info("📊 Weights & Biases run completed")
+                except Exception as e:
+                    logger.warning(f"Failed to close wandb run: {e}")
 
 def main():
     """Main function"""
