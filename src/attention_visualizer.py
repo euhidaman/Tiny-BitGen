@@ -109,9 +109,19 @@ class AttentionHeadAnalyzer:
             if attention_weights is None:
                 continue
                 
-            # attention_weights shape: [batch_size, seq_len, seq_len]
-            batch_size, seq_len, _ = attention_weights.shape
-            
+            # Handle different attention weight shapes
+            if attention_weights.dim() == 3:
+                # attention_weights shape: [batch_size, seq_len, seq_len]
+                batch_size, seq_len, _ = attention_weights.shape
+            elif attention_weights.dim() == 2:
+                # attention_weights shape: [seq_len, seq_len] - single batch or averaged
+                seq_len, _ = attention_weights.shape
+                batch_size = 1
+                attention_weights = attention_weights.unsqueeze(0)  # Add batch dimension
+            else:
+                logger.warning(f"Unexpected attention weights shape: {attention_weights.shape}")
+                continue
+
             # Compute attention statistics per head (we average across heads in the model)
             # For head-level analysis, we need to modify the model to return per-head attention
             
