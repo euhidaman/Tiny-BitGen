@@ -140,7 +140,7 @@ training:
   warmup_steps: 1000 # Proper warmup for stability
   learning_rate: 3e-4 # Standard learning rate for COCO
   weight_decay: 0.01 # Balanced regularization
-  optimizer: "adamw" # Standard AdamW optimizer
+  optimizer: "adamw8bit" # Standard AdamW optimizer
 
   # Scheduler configuration
   scheduler_config:
@@ -311,7 +311,7 @@ token_tracking:
 # Hugging Face Hub integration (Modified for COCO)
 huggingface_hub:
   enabled: true # Enable automatic uploads to HF Hub
-  repo_id: "your-username/bitmar-coco" # Replace with your HF repo ID
+  repo_id: "euhidaman/bitgen-reasoning" # Replace with your HF repo ID
   private: true # Keep repo private by default
   upload_after_epoch: true # Upload checkpoint after each epoch
   upload_final_model: true # Upload final model at end
@@ -336,9 +336,9 @@ huggingface_hub:
     - cross_modal_similarity
     ---
     
-    # BitMar COCO Model
+    # BitGen Model
     
-    This model was trained on the COCO dataset for image captioning and cross-modal understanding.
+    This model was trained on the COCO dataset.
     
     ## Training Details
     - Dataset: COCO (full dataset)
@@ -362,7 +362,7 @@ huggingface_hub:
 # Attention Sinks configuration (Enhanced for long sequences)
 attention_sinks:
   enabled: true # Enable attention sinks for improved generation
-  attention_sink_size: 4 # Number of initial tokens as attention sinks
+  attention_sink_size: 25 # Number of initial tokens as attention sinks
   attention_sink_window_size: 1020 # Sliding window for recent tokens
   inject_to_text_encoder: true # Apply to text encoder
   inject_to_text_decoder: true # Apply to text decoder
@@ -392,8 +392,8 @@ validation:
 # Logging configuration (Enhanced)
 logging:
   use_wandb: true
-  project_name: "BitMar-COCO"
-  experiment_name: "coco_full_dataset"
+  project_name: "BitGen"
+  experiment_name: "coco_reasoning_full_dataset"
   log_every_n_steps: 50
   save_top_k: 5 # Save top 5 checkpoints
   monitor: "val_loss"
@@ -410,7 +410,7 @@ checkpointing:
 # Model saving configuration (Enhanced)  
 model_saving:
   save_hf_model: true # Save to Hugging Face format
-  hf_model_name: "bitmar-coco"
+  hf_model_name: "bitgen"
   save_every_epoch: true # Save model every epoch
   save_optimizer_state: true # Save optimizer state
   save_scheduler_state: true # Save scheduler state
@@ -427,7 +427,7 @@ environment:
 carbon_tracking:
   enabled: true # Enable carbon tracking
   country_iso_code: "USA"
-  project_name: "BitMar-COCO-Training"
+  project_name: "BitGen-Training"
   output_dir: "./emissions"
 
 # Special COCO features (Enhanced)
