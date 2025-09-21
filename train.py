@@ -757,6 +757,13 @@ class COCOTrainer:
             def __init__(self, train_loader, val_loader):
                 self.train_loader = train_loader
                 self.val_loader = val_loader
+                # Extract the dataset from the train_loader for compatibility
+                self.train_dataset = train_loader.dataset
+                self.dataset = train_loader.dataset  # Fallback for compatibility
+                self.batch_size = train_loader.batch_size
+                self.num_workers = train_loader.num_workers
+                self.pin_memory = getattr(train_loader, 'pin_memory', True)
+                self.persistent_workers = getattr(train_loader, 'persistent_workers', True)
 
             def train_dataloader(self):
                 return self.train_loader
@@ -769,14 +776,8 @@ class COCOTrainer:
         def custom_train_dataloader():
             from torch.utils.data import DataLoader
 
-            # Get the dataset - handle different data module types
-            if hasattr(self.data_module, 'train_dataset'):
-                dataset = self.data_module.train_dataset
-            elif hasattr(self.data_module, 'dataset'):
-                dataset = self.data_module.dataset
-            else:
-                logger.error("No dataset found in data module")
-                raise AttributeError("Data module has no dataset attribute")
+            # Get the dataset - now it should be available
+            dataset = self.data_module.train_dataset
 
             # Get data module attributes safely
             batch_size = getattr(self.data_module, 'batch_size',
