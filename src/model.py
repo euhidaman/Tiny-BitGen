@@ -13,7 +13,7 @@ from typing import Dict, List, Optional, Tuple, Union
 from transformers import AutoTokenizer
 import math
 import logging
-from fiber_fusion import FIBERCrossModalFusion, create_fiber_fusion
+from .fiber_fusion import FIBERCrossModalFusion, create_fiber_fusion
 
 logger = logging.getLogger(__name__)
 
