@@ -5,6 +5,147 @@
 
 BitMar is a **Vision-Language Episodic Memory Transformer** with integrated GRPO reasoning capabilities. It combines BitNet-quantized text processing, DiNOv2 vision encoding, episodic memory mechanisms, and Tiny-R1 style chain-of-thought reasoning for robot selection tasks.
 
+## 🚀 Quick Start
+
+Follow these commands sequentially to set up and run the complete BitMar system:
+
+### 1. Environment Setup
+```bash
+# Clone the repository
+git clone https://github.com/euhidaman/Tiny-BitGen.git
+cd Tiny-BitGen
+
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+### 2. Download Datasets
+
+#### COCO Dataset (for vision-language training)
+```bash
+# Download COCO supplement data
+python download_coco_supplement.py --dataset_dir ./data/coco
+
+# This will download:
+# - COCO images and captions
+# - Aligned pairs for vision-language training
+# - Preprocessed vision features
+```
+
+#### Robot Selection Dataset (for reasoning training)
+```bash
+# Robot selection datasets should be placed at:
+# D:/BabyLM/robot_selection_data/data/Single-Robot-Selection/single_robot_selection_dataset.json
+# D:/BabyLM/robot_selection_data/data/Multi-Robot-Selection/multi_robot_selection_dataset.json
+
+# If datasets are elsewhere, update paths in src/robot_selection_dataset.py
+```
+
+### 3. Configure Training
+```bash
+# Option 1: Use default config directly (recommended)
+python train.py --config configs/bitmar_coco.yaml --device cuda:0
+
+# Option 2: Create custom config (only if you need modifications)
+cp configs/bitmar_coco.yaml configs/my_config.yaml
+# Edit configs/my_config.yaml with your custom settings:
+# - Dataset paths
+# - Model dimensions  
+# - Training parameters
+# - Wandb project name (optional)
+# - Hugging Face hub settings (optional)
+```
+
+### 4. Model Training
+```bash
+# Start hybrid COCO + Robot reasoning training
+python train.py --config configs/my_config.yaml --device cuda:0
+
+# With specific options:
+python train.py \
+    --config configs/my_config.yaml \
+    --device cuda:0 \
+    --enable_fast_eval \
+    --save_every_n_steps 1000
+
+# Monitor training with Weights & Biases (if configured)
+# View logs: tail -f training_coco.log
+```
+
+### 5. Model Evaluation
+```bash
+# Evaluate on robot selection tasks
+python -m src.robot_selection_dataset \
+    --single_robot_path "path/to/single_robot_selection_dataset.json" \
+    --multi_robot_path "path/to/multi_robot_selection_dataset.json"
+
+# Test Chain-of-Thought reasoning
+python -m src.grpo_reasoning_module
+
+# Run comprehensive evaluation (if evaluation pipeline available)
+python evaluate_model.py --checkpoint_path ./outputs/checkpoints/latest_checkpoint.pt
+```
+
+### 6. Inference and Usage
+```bash
+# Load trained model for inference
+python -c "
+from src.model import create_bitmar_model
+import torch
+
+# Load model
+config = {'model': {...}}  # Your config
+model = create_bitmar_model(config['model'])
+checkpoint = torch.load('./outputs/checkpoints/latest_checkpoint.pt')
+model.load_state_dict(checkpoint['model_state_dict'])
+
+# Example robot selection reasoning
+task = 'Navigate through underwater cave system'
+# ... reasoning implementation
+"
+```
+
+### 7. Optional: Hugging Face Integration
+```bash
+# If Hugging Face hub is configured, models are automatically uploaded
+# Manual upload:
+python -c "
+from train import COCOTrainer
+trainer = COCOTrainer('configs/my_config.yaml')
+trainer.upload_checkpoint_to_hf(epoch=0, final=True)
+"
+```
+
+### 8. Monitoring and Analysis
+```bash
+# View attention patterns
+ls ./outputs/attention_analysis/
+
+# Check memory usage patterns
+ls ./outputs/memory_logs/
+
+# Monitor carbon emissions (if enabled)
+ls ./emissions/
+
+# View FLOPS analysis
+ls ./flops_logs/
+```
+
+### System Requirements
+- **GPU**: NVIDIA GPU with 8GB+ VRAM (recommended)
+- **RAM**: 16GB+ system memory
+- **Storage**: 50GB+ free space for datasets and checkpoints
+- **Python**: 3.9+ with CUDA support
+
+### Expected Training Time
+- **COCO Training**: ~6-12 hours on RTX 4090
+- **Robot Reasoning**: ~30 minutes additional per epoch
+- **Full Pipeline**: ~8-15 hours depending on epochs and dataset size
+
 ## 🌟 Key Features
 
 - **GRPO Reasoning**: Tiny-R1 style chain-of-thought reasoning with policy optimization
