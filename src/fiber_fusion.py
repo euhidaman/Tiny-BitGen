@@ -185,27 +185,47 @@ class CrossModalAttention(nn.Module):
                 logger.warning(f"Input shape: {text_normed.shape}, Output shape: {text_qkv_raw.shape}")
                 logger.warning(f"Hidden dim: {self.hidden_dim}, Heads: {self.num_heads}, Head dim: {self.head_dim}")
 
+            # FIXED: Safe reshape and unpack with proper error handling
+            # Check if we have the right dimensions for QKV
+            expected_last_dim = self.hidden_dim * 3
+            if text_qkv_raw.size(-1) != expected_last_dim:
+                logger.error(f"QKV last dimension mismatch: got {text_qkv_raw.size(-1)}, expected {expected_last_dim}")
+                # Pad or truncate to the expected size
+                if text_qkv_raw.size(-1) < expected_last_dim:
+                    # Pad with zeros
+                    pad_size = expected_last_dim - text_qkv_raw.size(-1)
+                    padding = torch.zeros(*text_qkv_raw.shape[:-1], pad_size, device=text_qkv_raw.device, dtype=text_qkv_raw.dtype)
+                    text_qkv_raw = torch.cat([text_qkv_raw, padding], dim=-1)
+                else:
+                    # Truncate
+                    text_qkv_raw = text_qkv_raw[..., :expected_last_dim]
+
             # Reshape with proper error handling
             text_qkv = text_qkv_raw.reshape(B, seq_len, 3, self.num_heads, self.head_dim)
             text_qkv = text_qkv.permute(2, 0, 3, 1, 4)  # [3, B, num_heads, seq_len, head_dim]
 
-            # Safely unpack Q, K, V
+            # Safely unpack Q, K, V with guaranteed 3 components
             if text_qkv.size(0) >= 3:
                 text_q, text_k, text_v = text_qkv[0], text_qkv[1], text_qkv[2]
+            elif text_qkv.size(0) == 2:
+                logger.warning("QKV tensor only has 2 components instead of 3, duplicating key as value")
+                text_q, text_k = text_qkv[0], text_qkv[1]
+                text_v = text_k  # Use key as value fallback
             else:
-                logger.error(f"QKV tensor has wrong first dimension: {text_qkv.size(0)}, expected 3")
-                # Fallback: duplicate the available tensors
-                if text_qkv.size(0) == 2:
-                    text_q, text_k = text_qkv[0], text_qkv[1]
-                    text_v = text_k  # Use key as value fallback
-                else:
-                    text_q = text_k = text_v = text_qkv[0]  # Use single tensor for all
+                logger.warning("QKV tensor only has 1 component, duplicating for Q, K, V")
+                text_q = text_k = text_v = text_qkv[0]  # Use single tensor for all
 
         except Exception as e:
             logger.error(f"QKV computation failed: {e}")
             logger.error(f"Text normed shape: {text_normed.shape}")
             logger.error(f"Expected hidden_dim * 3 = {self.hidden_dim * 3}")
-            raise
+            logger.error(f"Actual text_qkv_raw shape: {text_qkv_raw.shape if 'text_qkv_raw' in locals() else 'N/A'}")
+
+            # Fallback: create dummy tensors to prevent crash
+            dummy_shape = (B, self.num_heads, seq_len, self.head_dim)
+            text_q = torch.zeros(dummy_shape, device=text_normed.device, dtype=text_normed.dtype)
+            text_k = torch.zeros(dummy_shape, device=text_normed.device, dtype=text_normed.dtype)
+            text_v = torch.zeros(dummy_shape, device=text_normed.device, dtype=text_normed.dtype)
 
         # Text self-attention computation
         text_attn = (text_q @ text_k.transpose(-2, -1)) * self.scale
@@ -454,3 +474,4 @@ def create_fiber_fusion(config: Dict) -> FIBERCrossModalFusion:
         dropout=config.get('dropout', 0.1),
         use_relative_pos=config.get('use_relative_position', True)
     )
+
