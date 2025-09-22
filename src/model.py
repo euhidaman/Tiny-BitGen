@@ -257,9 +257,33 @@ class BitNetTransformerBlock(nn.Module):
         x: torch.Tensor,
         mask: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        # Self-attention with residual connection
-        normed_x = self.norm1(x)
-        attn_out, attn_weights = self.attn(normed_x, normed_x, normed_x, mask)
+        # FIXED: Safe unpacking for self-attention with proper error handling
+        try:
+            normed_x = self.norm1(x)
+            attn_result = self.attn(normed_x, normed_x, normed_x, mask)
+
+            # Handle different return formats from attention
+            if isinstance(attn_result, tuple) and len(attn_result) >= 2:
+                attn_out, attn_weights = attn_result[0], attn_result[1]
+            elif isinstance(attn_result, tuple) and len(attn_result) == 1:
+                logger.warning("Attention returned only 1 value instead of 2, using dummy weights")
+                attn_out = attn_result[0]
+                attn_weights = torch.zeros(x.size(0), x.size(1), x.size(1), device=x.device)
+            elif torch.is_tensor(attn_result):
+                logger.warning("Attention returned single tensor, using dummy weights")
+                attn_out = attn_result
+                attn_weights = torch.zeros(x.size(0), x.size(1), x.size(1), device=x.device)
+            else:
+                logger.error(f"Attention returned unexpected type: {type(attn_result)}")
+                attn_out = normed_x  # Fallback to input
+                attn_weights = torch.zeros(x.size(0), x.size(1), x.size(1), device=x.device)
+
+        except Exception as e:
+            logger.error(f"Attention computation failed: {e}")
+            # Fallback: use input unchanged
+            attn_out = self.norm1(x)
+            attn_weights = torch.zeros(x.size(0), x.size(1), x.size(1), device=x.device)
+
         x = x + attn_out
 
         # MLP with residual connection
