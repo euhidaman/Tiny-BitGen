@@ -173,12 +173,40 @@ class CrossModalAttention(nn.Module):
         
         # Text self-attention
         text_normed = self.norm_t(text_proj)
-        text_qkv = self.text_qkv(text_normed).reshape(
-            B, seq_len, 3, self.num_heads, self.head_dim
-        ).permute(2, 0, 3, 1, 4)  # [3, B, num_heads, seq_len, head_dim]
-        
-        text_q, text_k, text_v = text_qkv[0], text_qkv[1], text_qkv[2]
-        
+
+        # Debug: Check tensor dimensions before QKV computation
+        try:
+            text_qkv_raw = self.text_qkv(text_normed)  # Should be [B, seq_len, hidden_dim * 3]
+            expected_size = B * seq_len * self.hidden_dim * 3
+            actual_size = text_qkv_raw.numel()
+
+            if actual_size != expected_size:
+                logger.warning(f"QKV size mismatch: expected {expected_size}, got {actual_size}")
+                logger.warning(f"Input shape: {text_normed.shape}, Output shape: {text_qkv_raw.shape}")
+                logger.warning(f"Hidden dim: {self.hidden_dim}, Heads: {self.num_heads}, Head dim: {self.head_dim}")
+
+            # Reshape with proper error handling
+            text_qkv = text_qkv_raw.reshape(B, seq_len, 3, self.num_heads, self.head_dim)
+            text_qkv = text_qkv.permute(2, 0, 3, 1, 4)  # [3, B, num_heads, seq_len, head_dim]
+
+            # Safely unpack Q, K, V
+            if text_qkv.size(0) >= 3:
+                text_q, text_k, text_v = text_qkv[0], text_qkv[1], text_qkv[2]
+            else:
+                logger.error(f"QKV tensor has wrong first dimension: {text_qkv.size(0)}, expected 3")
+                # Fallback: duplicate the available tensors
+                if text_qkv.size(0) == 2:
+                    text_q, text_k = text_qkv[0], text_qkv[1]
+                    text_v = text_k  # Use key as value fallback
+                else:
+                    text_q = text_k = text_v = text_qkv[0]  # Use single tensor for all
+
+        except Exception as e:
+            logger.error(f"QKV computation failed: {e}")
+            logger.error(f"Text normed shape: {text_normed.shape}")
+            logger.error(f"Expected hidden_dim * 3 = {self.hidden_dim * 3}")
+            raise
+
         # Text self-attention computation
         text_attn = (text_q @ text_k.transpose(-2, -1)) * self.scale
         

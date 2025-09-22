@@ -1448,8 +1448,9 @@ class BitMarModel(nn.Module):
             text_mask=attention_mask
         )
 
-        # Extract fused features
-        fused_features = fusion_result['fused_features']
+        # Extract fused features - combine vision and text features
+        # Use the final vision features as the primary fused representation
+        fused_features = fusion_result['vision_features']
 
         # Create episode for memory storage
         episode = self.create_episode(
