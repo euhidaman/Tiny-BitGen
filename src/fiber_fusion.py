@@ -289,35 +289,36 @@ class CrossModalAttention(nn.Module):
                 # Use text as query, vision as key-value - FIXED shape computation
                 text_q = text_self.view(B, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
 
-                # FIXED: Properly handle vision key/value dimensions
-                vision_k = vision_proj.unsqueeze(1).unsqueeze(2)  # [B, 1, 1, hidden_dim]
-                vision_k = vision_k.expand(B, self.num_heads, 1, self.head_dim)  # [B, num_heads, 1, head_dim]
+                # FIXED: Properly handle vision key/value dimensions - correct tensor reshaping
+                # vision_proj is [B, hidden_dim], we need to convert it to [B, num_heads, 1, head_dim]
+                vision_reshaped = vision_proj.view(B, self.num_heads, self.head_dim)  # [B, num_heads, head_dim]
+                vision_k = vision_reshaped.unsqueeze(2)  # [B, num_heads, 1, head_dim]
                 vision_v = vision_k.clone()  # Same for key and value
 
                 t2i_attn = (text_q @ vision_k.transpose(-2, -1)) * self.scale
                 t2i_attn = F.softmax(t2i_attn, dim=-1)
 
-                # FIXED: Safe tensor size computation for reshape
+                # FIXED: Safe tensor computation for reshape
                 t2i_out = (t2i_attn @ vision_v)  # [B, num_heads, seq_len, head_dim]
                 t2i_out = t2i_out.transpose(1, 2).contiguous()  # [B, seq_len, num_heads, head_dim]
 
-                # Verify shape before reshape
-                expected_numel = B * seq_len * self.hidden_dim
-                actual_numel = t2i_out.numel()
-
-                if actual_numel != expected_numel:
-                    logger.warning(f"T2I output size mismatch: expected {expected_numel}, got {actual_numel}")
-                    logger.warning(f"T2I output shape: {t2i_out.shape}, target: [{B}, {seq_len}, {self.hidden_dim}]")
-                    # Fallback: use adaptive pooling to get correct size
-                    t2i_out = F.adaptive_avg_pool2d(t2i_out.view(B, seq_len, -1).unsqueeze(-1), (self.hidden_dim, 1)).squeeze(-1)
-                else:
+                # Verify dimensions match before reshape
+                if t2i_out.size(2) * t2i_out.size(3) == self.hidden_dim:
                     t2i_out = t2i_out.reshape(B, seq_len, self.hidden_dim)
+                else:
+                    logger.warning(f"T2I dimension mismatch: {t2i_out.size(2)} * {t2i_out.size(3)} != {self.hidden_dim}")
+                    # Fallback: flatten and project to correct size
+                    t2i_out = t2i_out.view(B, seq_len, -1)
+                    if t2i_out.size(-1) != self.hidden_dim:
+                        # Use adaptive pooling to get correct dimensions
+                        t2i_out = F.adaptive_avg_pool1d(t2i_out.transpose(1, 2), self.hidden_dim).transpose(1, 2)
 
             except Exception as e:
                 logger.error(f"Text-to-image attention failed: {e}")
                 logger.error(f"Debug info - B: {B}, seq_len: {seq_len}, num_heads: {self.num_heads}, head_dim: {self.head_dim}")
                 logger.error(f"Vision proj shape: {vision_proj.shape if 'vision_proj' in locals() else 'N/A'}")
                 logger.error(f"Text self shape: {text_self.shape if 'text_self' in locals() else 'N/A'}")
+                logger.error(f"Hidden dim: {self.hidden_dim}, expected head_dim * num_heads = {self.head_dim * self.num_heads}")
                 # Fallback: use original text features
                 t2i_out = text_self
                 t2i_attn = torch.zeros(B, self.num_heads, seq_len, 1, device=text_features.device)
