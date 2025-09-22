@@ -1579,7 +1579,10 @@ def create_bitmar_model(config: Dict) -> BitMarModel:
     # Create and return model
     model = BitMarModel(config)
     logger.info(f"✅ BitMar model created successfully")
-    logger.info(f"📊 Model parameters: {count_parameters(model):,}")
+
+    # Get parameter counts
+    param_counts = count_parameters(model)
+    logger.info(f"📊 Model parameters: {param_counts['total_parameters']:,}")
 
     return model
 
