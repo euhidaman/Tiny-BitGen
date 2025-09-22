@@ -1472,10 +1472,24 @@ class COCOTrainer:
                             f"Cross-modal similarity computation failed: {e}")
 
                 # Update progress bar
+                # Safely format values to avoid formatting None
+                try:
+                    loss_val = loss.item() if hasattr(loss, 'item') else (float(loss) if loss is not None else 0.0)
+                except Exception:
+                    loss_val = 0.0
+                try:
+                    tokens_val = int(self.tokens_processed) if self.tokens_processed is not None else 0
+                except Exception:
+                    tokens_val = 0
+                try:
+                    current_epoch_display = f"{(self.current_epoch or 0) + 1}/{self.config['training']['max_epochs']}"
+                except Exception:
+                    current_epoch_display = "n/a"
+
                 progress_bar.set_postfix({
-                    'loss': f"{loss.item():.4f}",
-                    'tokens': f"{self.tokens_processed:,}",
-                    'epoch': f"{self.current_epoch + 1}/{self.config['training']['max_epochs']}"
+                    'loss': f"{loss_val:.4f}",
+                    'tokens': f"{tokens_val:,}",
+                    'epoch': current_epoch_display
                 })
 
                 # Log token progress periodically
@@ -1613,13 +1627,31 @@ class COCOTrainer:
             epoch_metrics['cross_modal_similarity'] = epoch_metrics['cross_modal_similarity'] / \
                 len(epoch_losses)
 
+        # Safely format epoch summary to avoid None formatting errors
+        try:
+            loss_display = float(epoch_metrics.get('train_loss', 0.0))
+        except Exception:
+            loss_display = 0.0
+        try:
+            cms_display = float(epoch_metrics.get('cross_modal_similarity', 0.0))
+        except Exception:
+            cms_display = 0.0
+        try:
+            tokens_in_epoch_display = int(epoch_metrics.get('tokens_in_epoch', 0) or 0)
+        except Exception:
+            tokens_in_epoch_display = 0
+        try:
+            total_tokens_display = int(self.tokens_processed or 0)
+        except Exception:
+            total_tokens_display = 0
+
         logger.info(f"Epoch {epoch} completed:")
-        logger.info(f"  • Loss: {epoch_metrics['train_loss']:.4f}")
+        logger.info(f"  • Loss: {loss_display:.4f}")
         logger.info(
-            f"  • Cross-modal similarity: {epoch_metrics['cross_modal_similarity']:.4f}")
+            f"  • Cross-modal similarity: {cms_display:.4f}")
         logger.info(
-            f"  • Tokens in epoch: {epoch_metrics['tokens_in_epoch']:,}")
-        logger.info(f"  • Total tokens processed: {self.tokens_processed:,}")
+            f"  • Tokens in epoch: {tokens_in_epoch_display:,}")
+        logger.info(f"  • Total tokens processed: {total_tokens_display:,}")
 
         return epoch_metrics
 
