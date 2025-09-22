@@ -1584,6 +1584,14 @@ def create_bitmar_model(config: Dict) -> BitMarModel:
     return model
 
 
-def count_parameters(model: nn.Module) -> int:
-    """Count trainable parameters in model"""
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+def count_parameters(model: nn.Module) -> Dict[str, int]:
+    """Count different types of parameters in model"""
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    non_trainable_params = sum(p.numel() for p in model.parameters() if not p.requires_grad)
+    total_params = trainable_params + non_trainable_params
+
+    return {
+        'total_parameters': total_params,
+        'trainable_parameters': trainable_params,
+        'non_trainable_parameters': non_trainable_params
+    }
