@@ -1448,514 +1448,142 @@ class BitMarModel(nn.Module):
             text_mask=attention_mask
         )
 
-        # Extract fused features (use text features as main sequence output)
-        fused_features = fusion_result['text_features']
-        cross_attention = {
-            'attention_weights': fusion_result['attention_weights'],
-            'cross_modal_similarity': fusion_result['cross_modal_similarity']
-        }
+        # Extract fused features
+        fused_features = fusion_result['fused_features']
 
-        # Update adaptive controller with cross-modal similarity if available
-        if mode == "train" and adaptive_controller is not None and has_vision.any():
-            try:
-                # Compute cross-modal similarity for samples with vision
-                vision_indices = has_vision.nonzero(as_tuple=True)[0]
-                if len(vision_indices) > 0:
-                    # Get features for samples with vision
-                    # [n_vision, seq_len, dim]
-                    text_with_vision = text_features[vision_indices]
-                    # [n_vision, dim]
-                    vision_with_vision = vision_latent_masked[vision_indices]
-
-                    # Pool text features
-                    text_pooled = text_with_vision.mean(
-                        dim=1)  # [n_vision, dim]
-
-                    # Compute cosine similarity
-                    similarity = F.cosine_similarity(
-                        text_pooled, vision_with_vision, dim=1)
-                    avg_similarity = similarity.mean().item()
-
-                    # Update adaptive controller
-                    adaptive_controller.update_similarity(avg_similarity, step)
-            except Exception as e:
-                logger.warning(f"Failed to update adaptive controller: {e}")
-
-        # GRPO Reasoning Stage (NEW: between fusion and memory)
-        grpo_reasoning_output = None
-        reasoning_enhanced_features = fused_features
-
-        if self.grpo_reasoning is not None:
-            # Pool text features for reasoning context
-            # [batch_size, fusion_hidden_size]
-            fusion_context = fused_features.mean(dim=1)
-
-            # Apply GRPO reasoning with robot selection
-            grpo_reasoning_output = self.grpo_reasoning(
-                context=fusion_context,
-                vision_features=vision_latent_masked,
-                return_loss=(mode == "train")
-            )
-
-            # Enhance features with reasoning state
-            # [batch_size, hidden_dim]
-            reasoning_state = grpo_reasoning_output["reasoning_state"]
-            reasoning_enhancement = reasoning_state.unsqueeze(
-                1).expand(-1, seq_len, -1)
-
-            # Blend reasoning with original features
-            reasoning_weight = self.config.get(
-                'grpo_reasoning', {}).get('reasoning_weight', 0.3)
-            reasoning_enhanced_features = (
-                (1 - reasoning_weight) * fused_features +
-                reasoning_weight * reasoning_enhancement
-            )
-
-        # Create episodes (different handling for vision vs text-only)
-        episode = self.create_episode_mixed(
-            text_features, vision_latent_masked, cross_attention, has_vision
+        # Create episode for memory storage
+        episode = self.create_episode(
+            text_features, vision_latent_masked, {'text_attention': text_attention}
         )
 
-        # Episodic memory interaction
-        if mode == "train":
-            retrieved_memory, memory_attention = self.memory(
-                episode, mode="read_write")
+        # Memory interaction
+        memory_output, memory_attention = self.memory(episode, mode="read_write")
+
+        # GRPO reasoning integration (if enabled)
+        if self.grpo_reasoning is not None and mode == "train":
+            try:
+                reasoning_output = self.grpo_reasoning(
+                    fused_features,
+                    memory_context=memory_output,
+                    step=step
+                )
+                # Use reasoning-enhanced features
+                enhanced_features = reasoning_output.get('enhanced_features', fused_features)
+            except Exception as e:
+                logger.warning(f"GRPO reasoning failed: {e}, using standard features")
+                enhanced_features = fused_features
         else:
-            retrieved_memory, memory_attention = self.memory(
-                episode, mode="read")
+            enhanced_features = fused_features
 
-        # Prepare decoder input with reasoning enhancement
-        memory_context = self.memory_to_decoder(retrieved_memory)
-        memory_context_expanded = memory_context.unsqueeze(
-            1).expand(-1, seq_len, -1)
-        fused_with_memory = reasoning_enhanced_features + memory_context_expanded
-        decoder_input = self.decoder_input_proj(fused_with_memory)
+        # Project memory to decoder dimension
+        memory_projected = self.memory_to_decoder(memory_output)
 
-        # Generate text using BitNet decoder
+        # Combine fused features with memory
+        combined_features = enhanced_features + memory_projected
+
+        # Project to decoder dimension
+        decoder_input = self.decoder_input_proj(combined_features)
+
+        # Prepare decoder inputs
+        decoder_embeddings = decoder_input.unsqueeze(1).expand(-1, seq_len, -1)
+
+        # Text decoder forward pass
         decoder_outputs = self.text_decoder(
-            inputs_embeds=decoder_input,
+            inputs_embeds=decoder_embeddings,
             attention_mask=attention_mask,
             labels=labels
         )
 
-        # Compute losses if in training mode
-        if mode == "train" and labels is not None:
-            # Primary decoder loss
-            decoder_loss = decoder_outputs['loss']
+        # Extract loss from decoder
+        text_loss = decoder_outputs.get('loss', torch.tensor(0.0, device=input_ids.device))
 
-            # Cross-modal contrastive loss (only for samples with vision)
-            cross_modal_loss = torch.tensor(0.0, device=input_ids.device)
-            if has_vision.any():
-                # Only compute cross-modal loss for samples with vision
+        # Compute additional losses
+        cross_modal_loss = torch.tensor(0.0, device=input_ids.device)
+        vision_loss = torch.tensor(0.0, device=input_ids.device)
+        memory_loss = torch.tensor(0.0, device=input_ids.device)
+
+        # Cross-modal contrastive loss (only for samples with vision)
+        if has_vision.any() and mode == "train":
+            try:
+                # Pool text features for contrastive learning
+                text_pooled = text_features.mean(dim=1)  # [batch_size, text_dim]
+
+                # Only compute loss for samples with vision
                 vision_indices = has_vision.nonzero(as_tuple=True)[0]
-                if len(vision_indices) > 0:
-                    text_pooled = text_features[vision_indices].mean(dim=1)
-                    vision_for_loss = vision_latent[vision_indices]
+                if len(vision_indices) > 1:  # Need at least 2 samples for contrastive loss
                     cross_modal_loss = self.compute_cross_modal_contrastive_loss(
-                        text_pooled, vision_for_loss, temperature=self.loss_scale_temperature
+                        text_pooled[vision_indices],
+                        vision_latent[vision_indices]
                     )
+            except Exception as e:
+                logger.warning(f"Cross-modal loss computation failed: {e}")
 
-            # Optional additional losses
-            vision_loss = None
-            if hasattr(self, 'vision_reconstruction') and self.config.get('use_vision_reconstruction', False):
-                if has_vision.any():
-                    vision_indices = has_vision.nonzero(as_tuple=True)[0]
-                    reconstructed_vision = self.vision_reconstruction(
-                        vision_latent[vision_indices])
-                    vision_loss = self.compute_vision_reconstruction_loss(
-                        vision_features[vision_indices], reconstructed_vision
-                    )
-
-            memory_loss = None
-            if self.config.get('use_memory_consistency_loss', True):
-                memory_loss = self.compute_memory_consistency_loss(
-                    episode, retrieved_memory)
-
-            # GRPO reasoning loss (NEW)
-            grpo_reasoning_loss = None
-            if grpo_reasoning_output is not None and 'total_loss' in grpo_reasoning_output:
-                grpo_reasoning_loss = grpo_reasoning_output['total_loss']
-
-            # Compute balanced loss with adaptive controller support
-            loss_dict = self.compute_balanced_loss_mixed(
-                decoder_loss, cross_modal_loss, vision_loss, memory_loss,
-                step, adaptive_controller, has_vision, grpo_reasoning_loss
-            )
-
-            final_loss = loss_dict['total_loss']
-        else:
-            final_loss = decoder_outputs['loss'] if 'loss' in decoder_outputs else None
-            loss_dict = {}
-
-        result = {
-            'loss': final_loss,
-            'logits': decoder_outputs['logits'],
-            'text_features': text_features,
-            'vision_latent': vision_latent_masked,  # Return masked version
-            # Return reasoning-enhanced features
-            'fused_features': reasoning_enhanced_features,
-            'episode': episode,
-            'retrieved_memory': retrieved_memory,
-            'cross_attention': cross_attention,
-            'memory_attention': memory_attention,
-            'text_attention': text_attention,
-            'decoder_attention': decoder_outputs.get('attention_patterns', None),
-            'memory_usage': self.memory.memory_usage.clone(),
-            'has_vision': has_vision,  # Return for downstream analysis
-            'grpo_reasoning_output': grpo_reasoning_output,  # NEW: GRPO reasoning results
-        }
-
-        # Add loss breakdown and freezing status
+        # Memory consistency loss
         if mode == "train":
-            result.update(loss_dict)
-            result.update(freezing_status)
+            try:
+                memory_loss = self.compute_memory_consistency_loss(episode, memory_output)
+            except Exception as e:
+                logger.warning(f"Memory loss computation failed: {e}")
 
-        return result
+        # Compute balanced total loss
+        if mode == "train" and labels is not None:
+            loss_dict = self.compute_balanced_loss(
+                text_loss, cross_modal_loss, vision_loss, memory_loss, step, adaptive_controller
+            )
+            total_loss = loss_dict['total_loss']
+        else:
+            total_loss = text_loss
+            loss_dict = {'total_loss': total_loss}
+
+        # Return comprehensive output dictionary
+        return {
+            'loss': total_loss,
+            'text_loss': text_loss,
+            'cross_modal_loss': cross_modal_loss,
+            'vision_loss': vision_loss,
+            'memory_loss': memory_loss,
+            'logits': decoder_outputs.get('logits'),
+            'text_features': text_features,
+            'vision_latent': vision_latent_masked,
+            'fused_features': fused_features,
+            'memory_output': memory_output,
+            'memory_attention': memory_attention,
+            'episode': episode,
+            'freezing_status': freezing_status,
+            'loss_breakdown': loss_dict
+        }
 
     def apply_adaptive_encoder_freezing(self, adaptive_controller):
-        """
-        Apply encoder freezing based on adaptive controller decisions
-        """
-        if adaptive_controller is None:
-            return {'text_encoder_frozen': False, 'vision_encoder_frozen': False}
-
-        freeze_states = adaptive_controller.get_encoder_freeze_states()
-
-        # Freeze/unfreeze text encoder
-        for param in self.text_encoder.parameters():
-            param.requires_grad = not freeze_states['freeze_text_encoder']
-
-        # Freeze/unfreeze vision encoder
-        for param in self.vision_encoder.parameters():
-            param.requires_grad = not freeze_states['freeze_vision_encoder']
-
-        return {
-            'text_encoder_frozen': freeze_states['freeze_text_encoder'],
-            'vision_encoder_frozen': freeze_states['freeze_vision_encoder']
-        }
-
-    def generate(
-        self,
-        input_ids: torch.Tensor,
-        attention_mask: torch.Tensor,
-        vision_features: torch.Tensor,
-        max_length: int = 100,
-        temperature: float = 0.7,
-        top_p: float = 0.9
-    ) -> Dict[str, torch.Tensor]:
-        """Generate text given input text and vision features"""
-        self.eval()
-
-        with torch.no_grad():
-            # Encode inputs
-            outputs = self.forward(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                vision_features=vision_features,
-                mode="inference"
-            )
-
-            # Start with input sequence
-            generated_ids = input_ids.clone()
-
-            for _ in range(max_length - input_ids.size(1)):
-                # Get next token logits
-                # [batch_size, vocab_size]
-                next_logits = outputs['logits'][:, -1, :]
-
-                # Apply temperature
-                next_logits = next_logits / temperature
-
-                # Apply top-p filtering
-                if top_p < 1.0:
-                    sorted_logits, sorted_indices = torch.sort(
-                        next_logits, descending=True)
-                    cumulative_probs = torch.cumsum(
-                        F.softmax(sorted_logits, dim=-1), dim=-1)
-
-                    # Remove tokens with cumulative probability above the threshold
-                    sorted_indices_to_remove = cumulative_probs > top_p
-                    sorted_indices_to_remove[...,
-                                             1:] = sorted_indices_to_remove[..., :-1].clone()
-                    sorted_indices_to_remove[..., 0] = 0
-
-                    indices_to_remove = sorted_indices_to_remove.scatter(
-                        1, sorted_indices, sorted_indices_to_remove)
-                    next_logits[indices_to_remove] = float('-inf')
-
-                # Sample next token
-                probs = F.softmax(next_logits, dim=-1)
-                next_token = torch.multinomial(probs, num_samples=1)
-
-                # Append to generated sequence
-                generated_ids = torch.cat([generated_ids, next_token], dim=1)
-
-                # Update attention mask
-                attention_mask = torch.cat([
-                    attention_mask,
-                    torch.ones_like(next_token)
-                ], dim=1)
-
-                # Check for EOS token
-                if next_token.item() == self.tokenizer.eos_token_id:
-                    break
-
-                # Update outputs for next iteration
-                outputs = self.forward(
-                    input_ids=generated_ids,
-                    attention_mask=attention_mask,
-                    vision_features=vision_features,
-                    mode="inference"
-                )
-
-        return {
-            'generated_ids': generated_ids,
-            'generated_text': self.tokenizer.batch_decode(generated_ids, skip_special_tokens=True),
-            'attention_patterns': outputs['cross_attention'],
-            'memory_patterns': outputs['memory_attention']
-        }
-
-    def create_episode_mixed(
-        self,
-        text_features: torch.Tensor,
-        vision_latent: torch.Tensor,
-        attention_weights: Dict[str, torch.Tensor],
-        has_vision: torch.Tensor
-    ) -> torch.Tensor:
-        """Create episodes with different handling for vision vs text-only samples"""
-        batch_size = text_features.size(0)
-
-        # Pool text features
-        text_pooled = text_features.mean(dim=1)  # [batch_size, text_dim]
-
-        # Project to episode dimension
-        text_episode = self.text_to_episode(text_pooled)
-        vision_episode = self.vision_to_episode(vision_latent)
-
-        # For text-only samples, use only text features
-        # For multimodal samples, combine text and vision
-        episode = torch.zeros_like(text_episode)
-
-        # Text-only samples (has_vision == False)
-        text_only_mask = ~has_vision
-        if text_only_mask.any():
-            episode[text_only_mask] = text_episode[text_only_mask]
-
-        # Multimodal samples (has_vision == True)
-        multimodal_mask = has_vision
-        if multimodal_mask.any():
-            # Combine text and vision for multimodal samples
-            combined = text_episode[multimodal_mask] + \
-                vision_episode[multimodal_mask]
-            episode[multimodal_mask] = combined
-
-        return episode
-
-    def compute_balanced_loss_mixed(
-        self,
-        decoder_loss: torch.Tensor,
-        cross_modal_loss: torch.Tensor,
-        vision_loss: Optional[torch.Tensor],
-        memory_loss: Optional[torch.Tensor],
-        step: int,
-        adaptive_controller=None,
-        has_vision: torch.Tensor = None,
-        # NEW: GRPO reasoning loss
-        grpo_reasoning_loss: Optional[torch.Tensor] = None
-    ) -> Dict[str, torch.Tensor]:
-        """Compute balanced loss for mixed vision/text batches with GRPO reasoning"""
-
-        # Base loss weights from config
-        text_weight = self.config.get('text_generation_loss_weight', 1.0)
-        cross_modal_weight = self.config.get('cross_modal_loss_weight', 1.0)
-        memory_weight = self.config.get('memory_regularization_weight', 0.1)
-        grpo_reasoning_weight = self.config.get(
-            'grpo_reasoning', {}).get('loss_weight', 0.2)  # NEW
-
-        # Adjust cross-modal weight based on vision availability
-        if has_vision is not None:
-            vision_ratio = has_vision.float().mean().item()
-            # Scale cross-modal loss by the proportion of samples with vision
-            cross_modal_weight = cross_modal_weight * vision_ratio
-
-        # Apply adaptive loss rebalancing if controller is available
-        if adaptive_controller is not None:
-            controller_info = adaptive_controller.get_loss_multipliers()
-            cross_modal_weight *= controller_info.get(
-                'cross_modal_weight_multiplier', 1.0)
-
-        # Compute total loss
-        total_loss = text_weight * decoder_loss
-
-        if cross_modal_loss is not None and cross_modal_loss.item() > 0:
-            total_loss = total_loss + cross_modal_weight * cross_modal_loss
-
-        if vision_loss is not None:
-            vision_weight = self.config.get(
-                'vision_reconstruction_weight', 0.1)
-            total_loss = total_loss + vision_weight * vision_loss
-
-        if memory_loss is not None:
-            total_loss = total_loss + memory_weight * memory_loss
-
-        # NEW: Add GRPO reasoning loss
-        if grpo_reasoning_loss is not None:
-            total_loss = total_loss + grpo_reasoning_weight * grpo_reasoning_loss
-
-        # Return loss breakdown
-        loss_dict = {
-            'total_loss': total_loss,
-            'decoder_loss': decoder_loss,
-            'cross_modal_loss': cross_modal_loss,
-            'text_weight': text_weight,
-            'cross_modal_weight': cross_modal_weight,
-            'memory_weight': memory_weight,
-            'grpo_reasoning_weight': grpo_reasoning_weight  # NEW
-        }
-
-        if vision_loss is not None:
-            loss_dict['vision_loss'] = vision_loss
-        if memory_loss is not None:
-            loss_dict['memory_loss'] = memory_loss
-        if grpo_reasoning_loss is not None:
-            loss_dict['grpo_reasoning_loss'] = grpo_reasoning_loss  # NEW
-
-        return loss_dict
-
-    def extract_robot_selections(
-        self,
-        outputs: Dict[str, torch.Tensor],
-        threshold: float = 0.3
-    ) -> List[str]:
-        """
-        Extract human-readable robot selections from model outputs
-
-        Args:
-            outputs: Model forward outputs containing GRPO reasoning results
-            threshold: Probability threshold for robot selection
-
-        Returns:
-            List of robot selection strings for each sample in batch
-        """
-        if 'grpo_reasoning_output' not in outputs or outputs['grpo_reasoning_output'] is None:
-            # No GRPO reasoning available, return placeholder
-            batch_size = outputs['logits'].size(0)
-            return ["No robot reasoning available"] * batch_size
-
-        grpo_output = outputs['grpo_reasoning_output']
-
-        if 'robot_selection' not in grpo_output:
-            batch_size = outputs['logits'].size(0)
-            return ["Robot reasoning failed"] * batch_size
-
-        robot_probs = grpo_output['robot_selection']  # [batch_size, 6]
-
-        # Use the GRPO reasoning module's extraction method
-        if self.grpo_reasoning is not None:
-            return self.grpo_reasoning.extract_robot_selection_text(robot_probs, threshold)
-        else:
-            # Fallback extraction
-            robot_names = [
-                "Drone", "Underwater Robot", "Humanoid",
-                "Robot with Wheels", "Robot with Legs", "No Robot"
-            ]
-
-            batch_size = robot_probs.size(0)
-            selections = []
-
-            for batch_idx in range(batch_size):
-                selected_robots = []
-                probs = robot_probs[batch_idx]
-
-                for robot_idx, prob in enumerate(probs):
-                    if prob > threshold and robot_idx < 5:  # Exclude "No Robot"
-                        selected_robots.append(robot_names[robot_idx])
-
-                if not selected_robots:
-                    # If no robot meets threshold, select the highest probability one
-                    max_idx = torch.argmax(probs[:5])  # Exclude "No Robot"
-                    selected_robots.append(robot_names[max_idx])
-
-                selections.append(", ".join(selected_robots))
-
-            return selections
-
-    def get_reasoning_analysis(
-        self,
-        outputs: Dict[str, torch.Tensor]
-    ) -> Dict[str, any]:
-        """
-        Get detailed analysis of GRPO reasoning outputs
-
-        Args:
-            outputs: Model forward outputs containing GRPO reasoning results
-
-        Returns:
-            Dict containing reasoning analysis
-        """
-        if 'grpo_reasoning_output' not in outputs or outputs['grpo_reasoning_output'] is None:
-            return {"reasoning_available": False}
-
-        grpo_output = outputs['grpo_reasoning_output']
-
-        analysis = {
-            "reasoning_available": True,
-            "robot_selections": self.extract_robot_selections(outputs),
-        }
-
-        # Add reasoning quality if available
-        if 'reasoning_quality' in grpo_output:
-            quality = grpo_output['reasoning_quality']  # [batch_size, 4]
-            quality_labels = ['coherence', 'relevance',
-                              'completeness', 'accuracy']
-
-            analysis['reasoning_quality'] = {}
-            for i, label in enumerate(quality_labels):
-                analysis['reasoning_quality'][label] = quality[:, i].mean().item()
-
-        # Add thought scores if available
-        if 'thought_scores' in grpo_output:
-            # [batch_size, steps, 1]
-            thought_scores = grpo_output['thought_scores']
-            analysis['thought_progression'] = thought_scores.mean(
-                dim=0).squeeze(-1).tolist()
-
-        # Add robot probabilities
-        if 'robot_selection' in grpo_output:
-            robot_probs = grpo_output['robot_selection']  # [batch_size, 6]
-            robot_names = ["Drone", "Underwater Robot", "Humanoid",
-                           "Robot with Wheels", "Robot with Legs", "No Robot"]
-
-            analysis['robot_probabilities'] = {}
-            for i, name in enumerate(robot_names):
-                analysis['robot_probabilities'][name] = robot_probs[:,
-                                                                    i].mean().item()
-
-        return analysis
-
-
-def count_parameters(model: nn.Module) -> Dict[str, int]:
-    """Count model parameters"""
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel()
-                           for p in model.parameters() if p.requires_grad)
-
-    return {
-        'total_parameters': total_params,
-        'trainable_parameters': trainable_params,
-        'non_trainable_parameters': total_params - trainable_params
-    }
+        """Apply adaptive encoder freezing based on controller state"""
+        # Placeholder for adaptive freezing logic
+        return self.apply_encoder_freezing(self.current_step)
 
 
 def create_bitmar_model(config: Dict) -> BitMarModel:
-    """Create BitMar model from configuration"""
-    model = BitMarModel(config)
+    """Create BitMar model with configuration validation"""
 
-    # Print model statistics
-    param_count = count_parameters(model)
-    logger.info(
-        f"BitMar Model created with {param_count['total_parameters']:,} total parameters")
-    logger.info(
-        f"Trainable parameters: {param_count['trainable_parameters']:,}")
+    # Validate required config keys
+    required_keys = [
+        'vocab_size', 'text_encoder_dim', 'text_encoder_layers', 'text_encoder_heads',
+        'text_decoder_dim', 'text_decoder_layers', 'text_decoder_heads',
+        'vision_encoder_dim', 'vision_hidden_size', 'vision_latent_size',
+        'fusion_num_heads', 'fusion_num_layers', 'fusion_hidden_size',
+        'memory_size', 'episode_dim', 'memory_alpha', 'direct_writing',
+        'max_seq_len', 'dropout'
+    ]
+
+    for key in required_keys:
+        if key not in config:
+            raise ValueError(f"Missing required config key: {key}")
+
+    # Create and return model
+    model = BitMarModel(config)
+    logger.info(f"✅ BitMar model created successfully")
+    logger.info(f"📊 Model parameters: {count_parameters(model):,}")
 
     return model
+
+
+def count_parameters(model: nn.Module) -> int:
+    """Count trainable parameters in model"""
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
