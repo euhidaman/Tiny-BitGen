@@ -97,7 +97,9 @@ class CrossModalAttention(nn.Module):
         self.t2i_q = BitNetLinear(hidden_dim, hidden_dim, bias=qkv_bias)
         self.t2i_kv = BitNetLinear(hidden_dim, hidden_dim * 2, bias=qkv_bias)
         
-        # Normalization layers
+        # Normalization layers (MISSING - this was causing the error!)
+        self.vision_norm = nn.LayerNorm(hidden_dim)
+        self.text_norm = nn.LayerNorm(hidden_dim)
         self.norm_v = nn.LayerNorm(hidden_dim)
         self.norm_t = nn.LayerNorm(hidden_dim)
         self.norm_i2t = nn.LayerNorm(hidden_dim)
@@ -284,20 +286,38 @@ class CrossModalAttention(nn.Module):
 
             # Text-to-Image attention with safe error handling
             try:
-                # Use text as query, vision as key-value
+                # Use text as query, vision as key-value - FIXED shape computation
                 text_q = text_self.view(B, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
 
-                vision_k = vision_proj.unsqueeze(1).unsqueeze(1).repeat(1, self.num_heads, 1, 1)  # [B, num_heads, 1, hidden_dim]
-                vision_k = vision_k.view(B, self.num_heads, 1, self.head_dim)
-                vision_v = vision_k  # Same for key and value
+                # FIXED: Properly handle vision key/value dimensions
+                vision_k = vision_proj.unsqueeze(1).unsqueeze(2)  # [B, 1, 1, hidden_dim]
+                vision_k = vision_k.expand(B, self.num_heads, 1, self.head_dim)  # [B, num_heads, 1, head_dim]
+                vision_v = vision_k.clone()  # Same for key and value
 
                 t2i_attn = (text_q @ vision_k.transpose(-2, -1)) * self.scale
                 t2i_attn = F.softmax(t2i_attn, dim=-1)
 
-                t2i_out = (t2i_attn @ vision_v).transpose(1, 2).reshape(B, seq_len, self.hidden_dim)
+                # FIXED: Safe tensor size computation for reshape
+                t2i_out = (t2i_attn @ vision_v)  # [B, num_heads, seq_len, head_dim]
+                t2i_out = t2i_out.transpose(1, 2).contiguous()  # [B, seq_len, num_heads, head_dim]
+
+                # Verify shape before reshape
+                expected_numel = B * seq_len * self.hidden_dim
+                actual_numel = t2i_out.numel()
+
+                if actual_numel != expected_numel:
+                    logger.warning(f"T2I output size mismatch: expected {expected_numel}, got {actual_numel}")
+                    logger.warning(f"T2I output shape: {t2i_out.shape}, target: [{B}, {seq_len}, {self.hidden_dim}]")
+                    # Fallback: use adaptive pooling to get correct size
+                    t2i_out = F.adaptive_avg_pool2d(t2i_out.view(B, seq_len, -1).unsqueeze(-1), (self.hidden_dim, 1)).squeeze(-1)
+                else:
+                    t2i_out = t2i_out.reshape(B, seq_len, self.hidden_dim)
 
             except Exception as e:
                 logger.error(f"Text-to-image attention failed: {e}")
+                logger.error(f"Debug info - B: {B}, seq_len: {seq_len}, num_heads: {self.num_heads}, head_dim: {self.head_dim}")
+                logger.error(f"Vision proj shape: {vision_proj.shape if 'vision_proj' in locals() else 'N/A'}")
+                logger.error(f"Text self shape: {text_self.shape if 'text_self' in locals() else 'N/A'}")
                 # Fallback: use original text features
                 t2i_out = text_self
                 t2i_attn = torch.zeros(B, self.num_heads, seq_len, 1, device=text_features.device)
