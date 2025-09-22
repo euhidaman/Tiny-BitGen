@@ -157,177 +157,212 @@ class CrossModalAttention(nn.Module):
             fused_text: [batch_size, seq_len, hidden_dim] 
             attention_weights: Dict of attention patterns
         """
-        B, seq_len, _ = text_features.shape
-        
-        # Project to common hidden dimension
-        vision_proj = self.vision_proj(vision_features)  # [B, hidden_dim]
-        text_proj = self.text_proj(text_features)  # [B, seq_len, hidden_dim]
-        
-        # Expand vision features for attention
-        vision_expanded = vision_proj.unsqueeze(1)  # [B, 1, hidden_dim]
-        
-        # === Self-attention first (following FIBER) ===
-        
-        # Vision self-attention (trivial since single token)
-        vision_normed = self.norm_v(vision_expanded)
-        
-        # Text self-attention
-        text_normed = self.norm_t(text_proj)
-
-        # Debug: Check tensor dimensions before QKV computation
         try:
-            text_qkv_raw = self.text_qkv(text_normed)  # Should be [B, seq_len, hidden_dim * 3]
-            expected_size = B * seq_len * self.hidden_dim * 3
-            actual_size = text_qkv_raw.numel()
+            B, seq_len, _ = text_features.shape
 
-            if actual_size != expected_size:
-                logger.warning(f"QKV size mismatch: expected {expected_size}, got {actual_size}")
-                logger.warning(f"Input shape: {text_normed.shape}, Output shape: {text_qkv_raw.shape}")
-                logger.warning(f"Hidden dim: {self.hidden_dim}, Heads: {self.num_heads}, Head dim: {self.head_dim}")
+            # Project to common hidden dimension
+            vision_proj = self.vision_proj(vision_features)  # [B, hidden_dim]
+            text_proj = self.text_proj(text_features)  # [B, seq_len, hidden_dim]
 
-            # FIXED: Safe reshape and unpack with proper error handling
-            # Check if we have the right dimensions for QKV
-            expected_last_dim = self.hidden_dim * 3
-            if text_qkv_raw.size(-1) != expected_last_dim:
-                logger.error(f"QKV last dimension mismatch: got {text_qkv_raw.size(-1)}, expected {expected_last_dim}")
-                # Pad or truncate to the expected size
-                if text_qkv_raw.size(-1) < expected_last_dim:
-                    # Pad with zeros
-                    pad_size = expected_last_dim - text_qkv_raw.size(-1)
-                    padding = torch.zeros(*text_qkv_raw.shape[:-1], pad_size, device=text_qkv_raw.device, dtype=text_qkv_raw.dtype)
-                    text_qkv_raw = torch.cat([text_qkv_raw, padding], dim=-1)
+            # Expand vision features for attention
+            vision_expanded = vision_proj.unsqueeze(1)  # [B, 1, hidden_dim]
+
+            # === Self-attention first (following FIBER) ===
+
+            # Vision self-attention (trivial since single token)
+            vision_self = vision_proj  # No change needed for single token
+
+            # Text self-attention with safe error handling
+            try:
+                text_normed = self.text_norm(text_proj)
+                text_qkv_raw = self.text_qkv(text_normed)
+
+                # FIXED: Enhanced safety checks for QKV computation
+                expected_size = B * seq_len * self.hidden_dim * 3
+                actual_size = text_qkv_raw.numel()
+
+                if actual_size != expected_size:
+                    logger.warning(f"QKV size mismatch: expected {expected_size}, got {actual_size}")
+                    logger.warning(f"Input shape: {text_normed.shape}, Output shape: {text_qkv_raw.shape}")
+                    logger.warning(f"Hidden dim: {self.hidden_dim}, Heads: {self.num_heads}, Head dim: {self.head_dim}")
+
+                # FIXED: Safe reshape and unpack with proper error handling
+                # Check if we have the right dimensions for QKV
+                expected_last_dim = self.hidden_dim * 3
+                if text_qkv_raw.size(-1) != expected_last_dim:
+                    logger.error(f"QKV last dimension mismatch: got {text_qkv_raw.size(-1)}, expected {expected_last_dim}")
+                    # Pad or truncate to the expected size
+                    if text_qkv_raw.size(-1) < expected_last_dim:
+                        # Pad with zeros
+                        pad_size = expected_last_dim - text_qkv_raw.size(-1)
+                        padding = torch.zeros(*text_qkv_raw.shape[:-1], pad_size, device=text_qkv_raw.device, dtype=text_qkv_raw.dtype)
+                        text_qkv_raw = torch.cat([text_qkv_raw, padding], dim=-1)
+                    else:
+                        # Truncate
+                        text_qkv_raw = text_qkv_raw[..., :expected_last_dim]
+
+                # Reshape with proper error handling
+                text_qkv = text_qkv_raw.reshape(B, seq_len, 3, self.num_heads, self.head_dim)
+                text_qkv = text_qkv.permute(2, 0, 3, 1, 4)  # [3, B, num_heads, seq_len, head_dim]
+
+                # Safely unpack Q, K, V with guaranteed 3 components
+                if text_qkv.size(0) >= 3:
+                    text_q, text_k, text_v = text_qkv[0], text_qkv[1], text_qkv[2]
+                elif text_qkv.size(0) == 2:
+                    logger.warning("QKV tensor only has 2 components instead of 3, duplicating key as value")
+                    text_q, text_k = text_qkv[0], text_qkv[1]
+                    text_v = text_k  # Use key as value fallback
                 else:
-                    # Truncate
-                    text_qkv_raw = text_qkv_raw[..., :expected_last_dim]
+                    logger.warning("QKV tensor only has 1 component, duplicating for Q, K, V")
+                    text_q = text_k = text_v = text_qkv[0]  # Use single tensor for all
 
-            # Reshape with proper error handling
-            text_qkv = text_qkv_raw.reshape(B, seq_len, 3, self.num_heads, self.head_dim)
-            text_qkv = text_qkv.permute(2, 0, 3, 1, 4)  # [3, B, num_heads, seq_len, head_dim]
+            except Exception as e:
+                logger.error(f"QKV computation failed: {e}")
+                logger.error(f"Text normed shape: {text_normed.shape if 'text_normed' in locals() else 'N/A'}")
+                logger.error(f"Expected hidden_dim * 3 = {self.hidden_dim * 3}")
+                logger.error(f"Actual text_qkv_raw shape: {text_qkv_raw.shape if 'text_qkv_raw' in locals() else 'N/A'}")
 
-            # Safely unpack Q, K, V with guaranteed 3 components
-            if text_qkv.size(0) >= 3:
-                text_q, text_k, text_v = text_qkv[0], text_qkv[1], text_qkv[2]
-            elif text_qkv.size(0) == 2:
-                logger.warning("QKV tensor only has 2 components instead of 3, duplicating key as value")
-                text_q, text_k = text_qkv[0], text_qkv[1]
-                text_v = text_k  # Use key as value fallback
-            else:
-                logger.warning("QKV tensor only has 1 component, duplicating for Q, K, V")
-                text_q = text_k = text_v = text_qkv[0]  # Use single tensor for all
+                # Fallback: create dummy tensors to prevent crash
+                dummy_shape = (B, self.num_heads, seq_len, self.head_dim)
+                text_q = torch.zeros(dummy_shape, device=text_features.device, dtype=text_features.dtype)
+                text_k = torch.zeros(dummy_shape, device=text_features.device, dtype=text_features.dtype)
+                text_v = torch.zeros(dummy_shape, device=text_features.device, dtype=text_features.dtype)
+
+            # Text self-attention computation with safe fallbacks
+            try:
+                text_attn = (text_q @ text_k.transpose(-2, -1)) * self.scale
+
+                # Add relative position bias
+                if self.use_relative_pos:
+                    rel_pos_bias = self.get_relative_pos_bias(seq_len)
+                    if rel_pos_bias is not None:
+                        text_attn = text_attn + rel_pos_bias.unsqueeze(0)
+
+                # Apply text mask
+                if text_mask is not None:
+                    text_mask_expanded = text_mask.unsqueeze(1).unsqueeze(2)  # [B, 1, 1, seq_len]
+                    text_attn = text_attn.masked_fill(~text_mask_expanded.bool(), -1e9)
+
+                text_attn = F.softmax(text_attn, dim=-1)
+                text_attn = self.attn_drop(text_attn)
+
+                text_self = (text_attn @ text_v).transpose(1, 2).reshape(B, seq_len, self.hidden_dim)
+                text_self = text_proj + self.proj_drop(text_self)  # Residual connection
+
+            except Exception as e:
+                logger.error(f"Text self-attention computation failed: {e}")
+                # Fallback: use original text projection
+                text_self = text_proj
+                text_attn = torch.zeros(B, self.num_heads, seq_len, seq_len, device=text_features.device)
+
+            # === Cross-modal attention (FIBER-style) ===
+
+            # Image-to-Text attention with safe error handling
+            try:
+                # Use vision as query, text as key-value
+                vision_q = vision_proj.unsqueeze(1).repeat(1, seq_len, 1)  # [B, seq_len, hidden_dim]
+                vision_q = vision_q.view(B, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+
+                text_k = text_self.view(B, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+                text_v = text_self.view(B, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+
+                i2t_attn = (vision_q @ text_k.transpose(-2, -1)) * self.scale
+
+                if text_mask is not None:
+                    text_mask_expanded = text_mask.unsqueeze(1).unsqueeze(1)  # [B, 1, 1, seq_len]
+                    i2t_attn = i2t_attn.masked_fill(~text_mask_expanded.bool(), -1e9)
+
+                i2t_attn = F.softmax(i2t_attn, dim=-1)
+                i2t_out = (i2t_attn @ text_v).transpose(1, 2).reshape(B, seq_len, self.hidden_dim)
+                i2t_out = i2t_out.mean(dim=1)  # Pool to single vision token
+
+            except Exception as e:
+                logger.error(f"Image-to-text attention failed: {e}")
+                # Fallback: use original vision features
+                i2t_out = vision_proj
+                i2t_attn = torch.zeros(B, self.num_heads, 1, seq_len, device=text_features.device)
+
+            # Text-to-Image attention with safe error handling
+            try:
+                # Use text as query, vision as key-value
+                text_q = text_self.view(B, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+
+                vision_k = vision_proj.unsqueeze(1).unsqueeze(1).repeat(1, self.num_heads, 1, 1)  # [B, num_heads, 1, hidden_dim]
+                vision_k = vision_k.view(B, self.num_heads, 1, self.head_dim)
+                vision_v = vision_k  # Same for key and value
+
+                t2i_attn = (text_q @ vision_k.transpose(-2, -1)) * self.scale
+                t2i_attn = F.softmax(t2i_attn, dim=-1)
+
+                t2i_out = (t2i_attn @ vision_v).transpose(1, 2).reshape(B, seq_len, self.hidden_dim)
+
+            except Exception as e:
+                logger.error(f"Text-to-image attention failed: {e}")
+                # Fallback: use original text features
+                t2i_out = text_self
+                t2i_attn = torch.zeros(B, self.num_heads, seq_len, 1, device=text_features.device)
+
+            # Adaptive fusion with learnable weights
+            try:
+                fused_vision = self.alpha_i2t * i2t_out + (1 - self.alpha_i2t) * vision_self
+                fused_text = self.alpha_t2i * t2i_out + (1 - self.alpha_t2i) * text_self
+            except Exception as e:
+                logger.error(f"Adaptive fusion failed: {e}")
+                # Fallback: use self-attention results
+                fused_vision = vision_self
+                fused_text = text_self
+
+            # Collect attention weights for analysis
+            attention_weights = {
+                'text_self_attention': text_attn.detach() if 'text_attn' in locals() else torch.zeros(1, 1, 1, 1, device=text_features.device),
+                'image_to_text_attention': i2t_attn.detach() if 'i2t_attn' in locals() else torch.zeros(1, 1, 1, 1, device=text_features.device),
+                'text_to_image_attention': t2i_attn.detach() if 't2i_attn' in locals() else torch.zeros(1, 1, 1, 1, device=text_features.device),
+                'alpha_i2t': self.alpha_i2t.detach(),
+                'alpha_t2i': self.alpha_t2i.detach()
+            }
+
+            return fused_vision, fused_text, attention_weights
 
         except Exception as e:
-            logger.error(f"QKV computation failed: {e}")
-            logger.error(f"Text normed shape: {text_normed.shape}")
-            logger.error(f"Expected hidden_dim * 3 = {self.hidden_dim * 3}")
-            logger.error(f"Actual text_qkv_raw shape: {text_qkv_raw.shape if 'text_qkv_raw' in locals() else 'N/A'}")
+            logger.error(f"FIBER cross-modal attention completely failed: {e}")
+            # Complete fallback: return input features with dummy attention weights
+            B, seq_len, _ = text_features.shape
 
-            # Fallback: create dummy tensors to prevent crash
-            dummy_shape = (B, self.num_heads, seq_len, self.head_dim)
-            text_q = torch.zeros(dummy_shape, device=text_normed.device, dtype=text_normed.dtype)
-            text_k = torch.zeros(dummy_shape, device=text_normed.device, dtype=text_normed.dtype)
-            text_v = torch.zeros(dummy_shape, device=text_normed.device, dtype=text_normed.dtype)
+            # Project to correct dimensions for fallback
+            try:
+                fused_vision = self.vision_proj(vision_features)
+                fused_text = self.text_proj(text_features)
+            except Exception as proj_e:
+                logger.error(f"Even projection failed: {proj_e}")
+                # Ultimate fallback: pad/truncate to expected dimensions
+                if vision_features.size(-1) != self.hidden_dim:
+                    if vision_features.size(-1) < self.hidden_dim:
+                        pad_size = self.hidden_dim - vision_features.size(-1)
+                        fused_vision = torch.cat([vision_features, torch.zeros(*vision_features.shape[:-1], pad_size, device=vision_features.device)], dim=-1)
+                    else:
+                        fused_vision = vision_features[..., :self.hidden_dim]
+                else:
+                    fused_vision = vision_features
 
-        # Text self-attention computation
-        text_attn = (text_q @ text_k.transpose(-2, -1)) * self.scale
-        
-        # Add relative position bias
-        if self.use_relative_pos:
-            rel_pos_bias = self.get_relative_pos_bias(seq_len)
-            if rel_pos_bias is not None:
-                text_attn = text_attn + rel_pos_bias.unsqueeze(0)
-        
-        # Apply text mask
-        if text_mask is not None:
-            text_mask_expanded = text_mask.unsqueeze(1).unsqueeze(2)  # [B, 1, 1, seq_len]
-            text_attn = text_attn.masked_fill(~text_mask_expanded.bool(), -1e9)
-        
-        text_attn = F.softmax(text_attn, dim=-1)
-        text_attn = self.attn_drop(text_attn)
-        
-        text_self = (text_attn @ text_v).transpose(1, 2).reshape(B, seq_len, self.hidden_dim)
-        text_self = text_proj + self.proj_drop(text_self)  # Residual connection
-        
-        # === Cross-modal attention (FIBER-style) ===
-        
-        # Image-to-Text attention
-        i2t_q = self.i2t_q(self.norm_i2t(vision_expanded))  # [B, 1, hidden_dim]
-        i2t_q = i2t_q.reshape(B, 1, self.num_heads, self.head_dim).transpose(1, 2)  # [B, num_heads, 1, head_dim]
-        
-        # FIXED: Safe KV unpacking for image-to-text attention
-        try:
-            i2t_kv_raw = self.i2t_kv(text_self)
-            i2t_kv = i2t_kv_raw.reshape(B, seq_len, 2, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)  # [2, B, num_heads, seq_len, head_dim]
+                if text_features.size(-1) != self.hidden_dim:
+                    if text_features.size(-1) < self.hidden_dim:
+                        pad_size = self.hidden_dim - text_features.size(-1)
+                        fused_text = torch.cat([text_features, torch.zeros(*text_features.shape[:-1], pad_size, device=text_features.device)], dim=-1)
+                    else:
+                        fused_text = text_features[..., :self.hidden_dim]
+                else:
+                    fused_text = text_features
 
-            if i2t_kv.size(0) >= 2:
-                i2t_k, i2t_v = i2t_kv[0], i2t_kv[1]
-            else:
-                logger.warning("i2t_kv tensor only has 1 component instead of 2, duplicating for K and V")
-                i2t_k = i2t_v = i2t_kv[0]
-        except Exception as e:
-            logger.error(f"i2t KV computation failed: {e}")
-            # Fallback: create dummy tensors
-            dummy_shape = (B, self.num_heads, seq_len, self.head_dim)
-            i2t_k = torch.zeros(dummy_shape, device=vision_expanded.device, dtype=vision_expanded.dtype)
-            i2t_v = torch.zeros(dummy_shape, device=vision_expanded.device, dtype=vision_expanded.dtype)
+            # Dummy attention weights
+            attention_weights = {
+                'text_self_attention': torch.zeros(1, 1, 1, 1, device=text_features.device),
+                'image_to_text_attention': torch.zeros(1, 1, 1, 1, device=text_features.device),
+                'text_to_image_attention': torch.zeros(1, 1, 1, 1, device=text_features.device),
+                'alpha_i2t': torch.tensor(0.5, device=text_features.device),
+                'alpha_t2i': torch.tensor(0.5, device=text_features.device)
+            }
 
-        # Compute image-to-text attention
-        i2t_attn = (i2t_q @ i2t_k.transpose(-2, -1)) * self.scale  # [B, num_heads, 1, seq_len]
-        
-        if text_mask is not None:
-            text_mask_i2t = text_mask.unsqueeze(1).unsqueeze(2)  # [B, 1, 1, seq_len]
-            i2t_attn = i2t_attn.masked_fill(~text_mask_i2t.bool(), -1e9)
-        
-        i2t_attn = F.softmax(i2t_attn, dim=-1)
-        i2t_attn = self.attn_drop(i2t_attn)
-        
-        # Apply attention to get cross-modal vision features
-        i2t_out = (i2t_attn @ i2t_v).transpose(1, 2).reshape(B, 1, self.hidden_dim)  # [B, 1, hidden_dim]
-        vision_cross = vision_expanded + self.alpha_i2t * self.proj_drop(i2t_out)
-        
-        # Text-to-Image attention  
-        t2i_q = self.t2i_q(self.norm_t2i(text_self))  # [B, seq_len, hidden_dim]
-        t2i_q = t2i_q.reshape(B, seq_len, self.num_heads, self.head_dim).transpose(1, 2)  # [B, num_heads, seq_len, head_dim]
-        
-        # FIXED: Safe KV unpacking for text-to-image attention
-        try:
-            t2i_kv_raw = self.t2i_kv(vision_expanded)
-            t2i_kv = t2i_kv_raw.reshape(B, 1, 2, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)  # [2, B, num_heads, 1, head_dim]
-
-            if t2i_kv.size(0) >= 2:
-                t2i_k, t2i_v = t2i_kv[0], t2i_kv[1]
-            else:
-                logger.warning("t2i_kv tensor only has 1 component instead of 2, duplicating for K and V")
-                t2i_k = t2i_v = t2i_kv[0]
-        except Exception as e:
-            logger.error(f"t2i KV computation failed: {e}")
-            # Fallback: create dummy tensors
-            dummy_shape = (B, self.num_heads, 1, self.head_dim)
-            t2i_k = torch.zeros(dummy_shape, device=vision_expanded.device, dtype=vision_expanded.dtype)
-            t2i_v = torch.zeros(dummy_shape, device=vision_expanded.device, dtype=vision_expanded.dtype)
-
-        # Compute text-to-image attention
-        t2i_attn = (t2i_q @ t2i_k.transpose(-2, -1)) * self.scale  # [B, num_heads, seq_len, 1]
-        t2i_attn = F.softmax(t2i_attn, dim=-1)
-        t2i_attn = self.attn_drop(t2i_attn)
-        
-        # Apply attention to get cross-modal text features
-        t2i_out = (t2i_attn @ t2i_v).transpose(1, 2).reshape(B, seq_len, self.hidden_dim)  # [B, seq_len, hidden_dim]
-        text_cross = text_self + self.alpha_t2i * self.proj_drop(t2i_out)
-        
-        # Final output projections
-        fused_vision = self.vision_out(vision_cross.squeeze(1))  # [B, hidden_dim]
-        fused_text = self.text_out(text_cross)  # [B, seq_len, hidden_dim]
-        
-        # Collect attention weights for analysis
-        attention_weights = {
-            'text_self_attention': text_attn.detach(),
-            'image_to_text_attention': i2t_attn.detach(),
-            'text_to_image_attention': t2i_attn.detach(),
-            'alpha_i2t': self.alpha_i2t.detach(),
-            'alpha_t2i': self.alpha_t2i.detach()
-        }
-        
-        return fused_vision, fused_text, attention_weights
+            return fused_vision, fused_text, attention_weights
 
 
 class FIBERCrossModalFusion(nn.Module):

@@ -1572,8 +1572,11 @@ class COCOTrainer:
                     self.save_token_checkpoint()
 
             except Exception as e:
+                # Ensure global_step is not None for logging
+                current_step = self.global_step if self.global_step is not None else 0
+
                 logger.error(
-                    f"Training step failed at step {self.global_step}: {e}")
+                    f"Training step failed at step {current_step}: {e}")
 
                 # Enhanced error logging for tensor size mismatches
                 if "size of tensor" in str(e) and "must match" in str(e):
@@ -1583,12 +1586,12 @@ class COCOTrainer:
                         if torch.is_tensor(v):
                             logger.error(f"    {k}: {v.shape}")
                     logger.error(f"  Model config:")
-                    logger.error(
-                        f"    Memory size: {self.config['model']['memory_size']}")
-                    logger.error(
-                        f"    Episode dim: {self.config['model']['episode_dim']}")
-                    logger.error(
-                        f"    Max seq length: {self.config['model']['max_seq_len']}")
+                    memory_size = self.config.get('model', {}).get('memory_size', 'N/A')
+                    episode_dim = self.config.get('model', {}).get('episode_dim', 'N/A')
+                    max_seq_len = self.config.get('model', {}).get('max_seq_len', 'N/A')
+                    logger.error(f"    Memory size: {memory_size}")
+                    logger.error(f"    Episode dim: {episode_dim}")
+                    logger.error(f"    Max seq length: {max_seq_len}")
 
                 # Clear any gradients and free memory
                 if hasattr(self, 'optimizer'):
