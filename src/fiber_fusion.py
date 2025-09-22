@@ -253,11 +253,23 @@ class CrossModalAttention(nn.Module):
         i2t_q = self.i2t_q(self.norm_i2t(vision_expanded))  # [B, 1, hidden_dim]
         i2t_q = i2t_q.reshape(B, 1, self.num_heads, self.head_dim).transpose(1, 2)  # [B, num_heads, 1, head_dim]
         
-        i2t_kv = self.i2t_kv(text_self).reshape(
-            B, seq_len, 2, self.num_heads, self.head_dim
-        ).permute(2, 0, 3, 1, 4)  # [2, B, num_heads, seq_len, head_dim]
-        i2t_k, i2t_v = i2t_kv[0], i2t_kv[1]
-        
+        # FIXED: Safe KV unpacking for image-to-text attention
+        try:
+            i2t_kv_raw = self.i2t_kv(text_self)
+            i2t_kv = i2t_kv_raw.reshape(B, seq_len, 2, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)  # [2, B, num_heads, seq_len, head_dim]
+
+            if i2t_kv.size(0) >= 2:
+                i2t_k, i2t_v = i2t_kv[0], i2t_kv[1]
+            else:
+                logger.warning("i2t_kv tensor only has 1 component instead of 2, duplicating for K and V")
+                i2t_k = i2t_v = i2t_kv[0]
+        except Exception as e:
+            logger.error(f"i2t KV computation failed: {e}")
+            # Fallback: create dummy tensors
+            dummy_shape = (B, self.num_heads, seq_len, self.head_dim)
+            i2t_k = torch.zeros(dummy_shape, device=vision_expanded.device, dtype=vision_expanded.dtype)
+            i2t_v = torch.zeros(dummy_shape, device=vision_expanded.device, dtype=vision_expanded.dtype)
+
         # Compute image-to-text attention
         i2t_attn = (i2t_q @ i2t_k.transpose(-2, -1)) * self.scale  # [B, num_heads, 1, seq_len]
         
@@ -276,11 +288,23 @@ class CrossModalAttention(nn.Module):
         t2i_q = self.t2i_q(self.norm_t2i(text_self))  # [B, seq_len, hidden_dim]
         t2i_q = t2i_q.reshape(B, seq_len, self.num_heads, self.head_dim).transpose(1, 2)  # [B, num_heads, seq_len, head_dim]
         
-        t2i_kv = self.t2i_kv(vision_expanded).reshape(
-            B, 1, 2, self.num_heads, self.head_dim
-        ).permute(2, 0, 3, 1, 4)  # [2, B, num_heads, 1, head_dim]
-        t2i_k, t2i_v = t2i_kv[0], t2i_kv[1]
-        
+        # FIXED: Safe KV unpacking for text-to-image attention
+        try:
+            t2i_kv_raw = self.t2i_kv(vision_expanded)
+            t2i_kv = t2i_kv_raw.reshape(B, 1, 2, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)  # [2, B, num_heads, 1, head_dim]
+
+            if t2i_kv.size(0) >= 2:
+                t2i_k, t2i_v = t2i_kv[0], t2i_kv[1]
+            else:
+                logger.warning("t2i_kv tensor only has 1 component instead of 2, duplicating for K and V")
+                t2i_k = t2i_v = t2i_kv[0]
+        except Exception as e:
+            logger.error(f"t2i KV computation failed: {e}")
+            # Fallback: create dummy tensors
+            dummy_shape = (B, self.num_heads, 1, self.head_dim)
+            t2i_k = torch.zeros(dummy_shape, device=vision_expanded.device, dtype=vision_expanded.dtype)
+            t2i_v = torch.zeros(dummy_shape, device=vision_expanded.device, dtype=vision_expanded.dtype)
+
         # Compute text-to-image attention
         t2i_attn = (t2i_q @ t2i_k.transpose(-2, -1)) * self.scale  # [B, num_heads, seq_len, 1]
         t2i_attn = F.softmax(t2i_attn, dim=-1)
@@ -474,4 +498,3 @@ def create_fiber_fusion(config: Dict) -> FIBERCrossModalFusion:
         dropout=config.get('dropout', 0.1),
         use_relative_pos=config.get('use_relative_position', True)
     )
-

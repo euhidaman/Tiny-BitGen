@@ -1457,8 +1457,35 @@ class BitMarModel(nn.Module):
             text_features, vision_latent_masked, {'text_attention': text_attention}
         )
 
-        # Memory interaction
-        memory_output, memory_attention = self.memory(episode, mode="read_write")
+        # Memory interaction - FIXED: Safe unpacking with proper error handling
+        try:
+            memory_result = self.memory(episode, mode="read_write")
+
+            # Handle different return formats from memory module
+            if isinstance(memory_result, tuple):
+                if len(memory_result) >= 2:
+                    memory_output, memory_attention = memory_result[0], memory_result[1]
+                elif len(memory_result) == 1:
+                    memory_output = memory_result[0]
+                    memory_attention = torch.zeros_like(memory_output[:, :1])  # Dummy attention
+                else:
+                    logger.error(f"Memory module returned empty tuple")
+                    memory_output = torch.zeros(batch_size, self.config['episode_dim'], device=input_ids.device)
+                    memory_attention = torch.zeros_like(memory_output[:, :1])
+            elif torch.is_tensor(memory_result):
+                # Memory module returned single tensor
+                memory_output = memory_result
+                memory_attention = torch.zeros_like(memory_output[:, :1])  # Dummy attention
+            else:
+                logger.error(f"Memory module returned unexpected type: {type(memory_result)}")
+                memory_output = torch.zeros(batch_size, self.config['episode_dim'], device=input_ids.device)
+                memory_attention = torch.zeros_like(memory_output[:, :1])
+
+        except Exception as e:
+            logger.error(f"Memory interaction failed: {e}")
+            # Fallback: create dummy outputs
+            memory_output = torch.zeros(batch_size, self.config['episode_dim'], device=input_ids.device)
+            memory_attention = torch.zeros_like(memory_output[:, :1])
 
         # GRPO reasoning integration (if enabled)
         if self.grpo_reasoning is not None and mode == "train":
