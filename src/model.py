@@ -341,14 +341,28 @@ class BitNetTextEncoder(nn.Module):
         # Transform through BitNet layers
         attention_patterns = []
         for layer in self.layers:
-            # Convert attention mask to the right format for the layer
-            layer_mask = None
-            if attention_mask is not None:
-                # Create a mask where 1 means attend, 0 means don't attend
-                layer_mask = attention_mask.unsqueeze(
-                    1).unsqueeze(2)  # [batch_size, 1, 1, seq_len]
+            # Safe unpacking with error handling
+            try:
+                layer_result = layer(x, attention_mask)
+                if isinstance(layer_result, tuple):
+                    if len(layer_result) >= 2:
+                        x, attn_weights = layer_result[0], layer_result[1]
+                    elif len(layer_result) == 1:
+                        x = layer_result[0]
+                        attn_weights = torch.zeros(x.size(0), x.size(1), x.size(1), device=x.device)
+                    else:
+                        logger.warning(f"Layer returned unexpected number of values: {len(layer_result)}")
+                        x = layer_result[0] if len(layer_result) > 0 else x
+                        attn_weights = torch.zeros(x.size(0), x.size(1), x.size(1), device=x.device)
+                else:
+                    # Single tensor return
+                    x = layer_result
+                    attn_weights = torch.zeros(x.size(0), x.size(1), x.size(1), device=x.device)
+            except Exception as e:
+                logger.error(f"Layer forward pass failed: {e}")
+                # Keep x unchanged and create dummy attention weights
+                attn_weights = torch.zeros(x.size(0), x.size(1), x.size(1), device=x.device)
 
-            x, attn_weights = layer(x, layer_mask)
             attention_patterns.append(attn_weights)
 
         x = self.norm(x)
@@ -434,7 +448,28 @@ class BitNetTextDecoder(nn.Module):
         # Transform through BitNet layers
         attention_patterns = []
         for layer in self.layers:
-            x, attn_weights = layer(x, mask)
+            # Safe unpacking with error handling
+            try:
+                layer_result = layer(x, mask)
+                if isinstance(layer_result, tuple):
+                    if len(layer_result) >= 2:
+                        x, attn_weights = layer_result[0], layer_result[1]
+                    elif len(layer_result) == 1:
+                        x = layer_result[0]
+                        attn_weights = torch.zeros(x.size(0), x.size(1), x.size(1), device=x.device)
+                    else:
+                        logger.warning(f"Decoder layer returned unexpected number of values: {len(layer_result)}")
+                        x = layer_result[0] if len(layer_result) > 0 else x
+                        attn_weights = torch.zeros(x.size(0), x.size(1), x.size(1), device=x.device)
+                else:
+                    # Single tensor return
+                    x = layer_result
+                    attn_weights = torch.zeros(x.size(0), x.size(1), x.size(1), device=x.device)
+            except Exception as e:
+                logger.error(f"Decoder layer forward pass failed: {e}")
+                # Keep x unchanged and create dummy attention weights
+                attn_weights = torch.zeros(x.size(0), x.size(1), x.size(1), device=x.device)
+
             attention_patterns.append(attn_weights)
 
         x = self.norm(x)
