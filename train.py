@@ -1103,31 +1103,35 @@ class COCOTrainer:
 
     def log_token_progress(self):
         """Log token consumption progress"""
+        # Ensure tokens_processed and target_tokens are not None
+        tokens_processed = self.tokens_processed if self.tokens_processed is not None else 0
+        target_tokens = self.target_tokens if self.target_tokens is not None else 0
+
         logger.info(
-            f"🎯 Tokens processed so far: {self.tokens_processed:,}")
-        logger.info(f"   Dataset size: {self.target_tokens:,} tokens")
+            f"🎯 Tokens processed so far: {tokens_processed:,}")
+        logger.info(f"   Dataset size: {target_tokens:,} tokens")
 
         # Log to wandb with error handling
         if self.use_wandb:
             try:
                 wandb.log({
-                    'token_progress/processed': self.tokens_processed,
-                    'token_progress/target': self.target_tokens
-                }, step=self.global_step)
+                    'token_progress/processed': tokens_processed,
+                    'token_progress/target': target_tokens
+                }, step=self.global_step if self.global_step is not None else 0)
             except Exception as e:
                 logger.warning(f"Failed to log to wandb: {e}")
                 # Disable wandb if it keeps failing
                 self.use_wandb = False
 
         logger.info(
-            f"🎯 COCO Tokens processed so far: {self.tokens_processed:,}")
+            f"🎯 COCO Tokens processed so far: {tokens_processed:,}")
 
         # Log to wandb with error handling
         if self.use_wandb:
             try:
                 wandb.log({
-                    'token_progress/processed': self.tokens_processed,
-                }, step=self.global_step)
+                    'token_progress/processed': tokens_processed,
+                }, step=self.global_step if self.global_step is not None else 0)
             except Exception as e:
                 logger.warning(f"Failed to log to wandb: {e}")
                 self.use_wandb = False
