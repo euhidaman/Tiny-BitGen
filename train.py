@@ -1345,6 +1345,7 @@ class COCOTrainer:
                     # Set padding tokens to -100 (ignored in loss computation)
                     labels[batch['attention_mask'] == 0] = -100
 
+                    # FIXED: Ensure proper handling of model outputs as dictionary
                     outputs = self.model(
                         input_ids=batch['input_ids'],
                         attention_mask=batch['attention_mask'],
@@ -1352,9 +1353,18 @@ class COCOTrainer:
                         labels=labels,
                         step=self.global_step,
                         has_vision=batch.get('has_vision', torch.ones(
-                            batch['input_ids'].size(0), dtype=torch.bool)),
-                        adaptive_controller=self.adaptive_controller
+                            batch['input_ids'].size(0), dtype=torch.bool, device=self.device)),
+                        adaptive_controller=self.adaptive_controller,
+                        mode="train"  # Explicitly set mode to train
                     )
+
+                    # Validate that outputs is a dictionary with required keys
+                    if not isinstance(outputs, dict):
+                        raise ValueError(f"Model output should be a dictionary, got {type(outputs)}")
+
+                    if 'loss' not in outputs:
+                        raise ValueError("Model output missing 'loss' key")
+
                     logger.debug(
                         f"Forward pass completed successfully for step {self.global_step}")
                 except Exception as forward_error:
