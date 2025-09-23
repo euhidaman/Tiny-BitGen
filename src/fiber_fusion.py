@@ -237,9 +237,12 @@ class CrossModalAttention(nn.Module):
             # We already have fallback values from initialization
 
         # GUARANTEE: Return exactly the right number of values based on return_attention
+        logger.info(f"CrossModalAttention: return_attention={return_attention}")
         if return_attention:
+            logger.info(f"CrossModalAttention: Returning 3 values - vision: {i2t_output.shape}, text: {t2i_output.shape}, attention_info: {type(attention_info)}")
             return i2t_output, t2i_output, attention_info
         else:
+            logger.info(f"CrossModalAttention: Returning 2 values - vision: {i2t_output.shape}, text: {t2i_output.shape}")
             return i2t_output, t2i_output
 
 
@@ -363,21 +366,66 @@ class FIBERCrossModalFusion(nn.Module):
                 # Call with return_attention parameter
                 cross_modal_result = cross_modal_layer(vision_feats, text_feats, text_mask, return_attention)
 
-                # Handle different return formats based on return_attention
-                if return_attention and len(cross_modal_result) == 3:
-                    vision_cross, text_cross, attn_weights = cross_modal_result
-                elif len(cross_modal_result) == 2:
-                    vision_cross, text_cross = cross_modal_result
-                    # Create dummy attention weights if needed
-                    attn_weights = {
-                        'i2t_attention': torch.zeros(1, 1, 1, 1, device=vision_feats.device),
-                        't2i_attention': torch.zeros(1, 1, 1, 1, device=vision_feats.device),
-                        'fusion_weights': {'alpha_i2t': 0.5, 'alpha_t2i': 0.5},
-                        'attention_entropy': torch.tensor(0.0, device=vision_feats.device),
-                        'cross_modal_similarity': torch.tensor(0.0, device=vision_feats.device)
-                    }
+                # DEBUG: Log exactly what we're getting back
+                logger.info(f"Layer {layer_idx}: cross_modal_result type: {type(cross_modal_result)}")
+                if isinstance(cross_modal_result, tuple):
+                    logger.info(f"Layer {layer_idx}: Got tuple with {len(cross_modal_result)} values")
+                    for i, val in enumerate(cross_modal_result):
+                        logger.info(f"Layer {layer_idx}: Value {i}: type={type(val)}, shape={getattr(val, 'shape', 'N/A')}")
                 else:
-                    logger.error(f"Layer {layer_idx}: Unexpected return format from cross_modal_layer")
+                    logger.info(f"Layer {layer_idx}: Got non-tuple result: {type(cross_modal_result)}")
+                    if hasattr(cross_modal_result, 'shape'):
+                        logger.info(f"Layer {layer_idx}: Shape: {cross_modal_result.shape}")
+
+                # ROBUST UNPACKING: Handle any number of return values safely
+                if isinstance(cross_modal_result, tuple):
+                    if len(cross_modal_result) == 3:
+                        logger.info(f"Layer {layer_idx}: Unpacking 3 values as expected")
+                        vision_cross, text_cross, attn_weights = cross_modal_result
+                    elif len(cross_modal_result) == 2:
+                        logger.warning(f"Layer {layer_idx}: Only got 2 values, expected 3 with return_attention={return_attention}")
+                        vision_cross, text_cross = cross_modal_result
+                        # Create dummy attention weights
+                        attn_weights = {
+                            'i2t_attention': torch.zeros(1, 1, 1, 1, device=vision_feats.device),
+                            't2i_attention': torch.zeros(1, 1, 1, 1, device=vision_feats.device),
+                            'fusion_weights': {'alpha_i2t': 0.5, 'alpha_t2i': 0.5},
+                            'attention_entropy': torch.tensor(0.0, device=vision_feats.device),
+                            'cross_modal_similarity': torch.tensor(0.0, device=vision_feats.device)
+                        }
+                    elif len(cross_modal_result) == 1:
+                        logger.warning(f"Layer {layer_idx}: Only got 1 value, expected 3")
+                        # Only got one tensor back - use as vision output
+                        vision_cross = cross_modal_result[0]
+                        text_cross = text_feats  # Use input as fallback
+                        attn_weights = {}
+                    else:
+                        logger.error(f"Layer {layer_idx}: Got {len(cross_modal_result)} values from cross_modal_layer, expected 2 or 3")
+                        vision_cross, text_cross = vision_feats, text_feats
+                        attn_weights = {}
+                else:
+                    # Not a tuple - treat as single tensor
+                    logger.warning(f"Layer {layer_idx}: cross_modal_layer returned non-tuple: {type(cross_modal_result)}")
+                    vision_cross = cross_modal_result if torch.is_tensor(cross_modal_result) else vision_feats
+                    text_cross = text_feats
+                    attn_weights = {}
+
+            except ValueError as ve:
+                if "not enough values to unpack" in str(ve):
+                    logger.error(f"Layer {layer_idx}: Unpacking error - falling back to safe extraction")
+                    # Safe fallback: try to extract values one by one
+                    try:
+                        if hasattr(cross_modal_result, '__len__') and len(cross_modal_result) >= 2:
+                            vision_cross, text_cross = cross_modal_result[0], cross_modal_result[1]
+                            attn_weights = cross_modal_result[2] if len(cross_modal_result) > 2 else {}
+                        else:
+                            vision_cross, text_cross = vision_feats, text_feats
+                            attn_weights = {}
+                    except:
+                        vision_cross, text_cross = vision_feats, text_feats
+                        attn_weights = {}
+                else:
+                    logger.error(f"Layer {layer_idx}: Cross-modal attention failed with ValueError: {ve}")
                     vision_cross, text_cross = vision_feats, text_feats
                     attn_weights = {}
 
