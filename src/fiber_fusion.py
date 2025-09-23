@@ -304,8 +304,8 @@ class FIBERCrossModalFusion(nn.Module):
             zip(self.cross_modal_layers, self.vision_ffns, self.text_ffns)
         ):
             try:
-                # Call with return_attention parameter
-                cross_modal_result = cross_modal_layer(vision_feats, text_feats, text_mask, return_attention)
+                # Call with output_attentions parameter (fixed parameter name)
+                cross_modal_result = cross_modal_layer(vision_feats, text_feats, text_mask, output_attentions=return_attention)
 
                 # DEBUG: Log exactly what we're getting back
                 logger.info(f"Layer {layer_idx}: cross_modal_result type: {type(cross_modal_result)}")
