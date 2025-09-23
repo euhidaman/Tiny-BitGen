@@ -104,15 +104,14 @@ class CrossModalAttention(nn.Module):
         text_features: torch.Tensor,   # [B, seq_len, text_dim]
         text_mask: Optional[torch.Tensor] = None,
         output_attentions: bool = False
-    ) -> Union[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor, Dict]]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         """
-        FIBER-style cross-modal attention
+        FIBER-style cross-modal attention following actual FIBER pattern
 
         Returns:
-            If output_attentions=False: (vision_output, text_output)
-            If output_attentions=True: (vision_output, text_output, attention_info)
+            Always returns (vision_output, text_output, attention_probs) where attention_probs may be None
         """
-        logger.info(f"CrossModalAttention: return_attention={output_attentions}")
+        logger.info(f"CrossModalAttention: output_attentions={output_attentions}")
 
         B, seq_len = text_features.shape[:2]
 
@@ -171,20 +170,11 @@ class CrossModalAttention(nn.Module):
         vision_output = output_features[:, 0]  # [B, hidden_dim]
         text_output = output_features[:, 1:]   # [B, seq_len, hidden_dim]
 
-        if output_attentions:
-            # Create attention info dictionary
-            attention_info = {
-                'i2t_attention': attention_probs[:, :, 0:1, 1:],  # Vision to text attention
-                't2i_attention': attention_probs[:, :, 1:, 0:1],  # Text to vision attention
-                'fusion_weights': {'alpha_i2t': 0.5, 'alpha_t2i': 0.5},
-                'attention_entropy': -(attention_probs * torch.log(attention_probs + 1e-8)).sum(dim=-1).mean(),
-                'cross_modal_similarity': torch.cosine_similarity(vision_output.mean(0), text_output.mean(1).mean(0), dim=0)
-            }
-            logger.info(f"CrossModalAttention: Returning 3 values - vision: {vision_output.shape}, text: {text_output.shape}, attention_info: {type(attention_info)}")
-            return vision_output, text_output, attention_info
-        else:
-            logger.info(f"CrossModalAttention: Returning 2 values - vision: {vision_output.shape}, text: {text_output.shape}")
-            return vision_output, text_output
+        # Following FIBER pattern: always return 3 values, with attention_probs or None
+        attention_output = attention_probs if output_attentions else None
+
+        logger.info(f"CrossModalAttention: Returning vision: {vision_output.shape}, text: {text_output.shape}, attention: {attention_output.shape if attention_output is not None else 'None'}")
+        return vision_output, text_output, attention_output
 
 
 class FIBERCrossModalFusion(nn.Module):
@@ -304,58 +294,28 @@ class FIBERCrossModalFusion(nn.Module):
             zip(self.cross_modal_layers, self.vision_ffns, self.text_ffns)
         ):
             try:
-                # Call with output_attentions parameter (fixed parameter name)
-                cross_modal_result = cross_modal_layer(vision_feats, text_feats, text_mask, output_attentions=return_attention)
+                # Call cross-modal attention - now always returns exactly 3 values
+                vision_cross, text_cross, attention_probs = cross_modal_layer(
+                    vision_feats, text_feats, text_mask, output_attentions=return_attention
+                )
 
-                # DEBUG: Log exactly what we're getting back
-                logger.info(f"Layer {layer_idx}: cross_modal_result type: {type(cross_modal_result)}")
-                if isinstance(cross_modal_result, tuple):
-                    logger.info(f"Layer {layer_idx}: Got tuple with {len(cross_modal_result)} values")
-                    for i, val in enumerate(cross_modal_result):
-                        logger.info(f"Layer {layer_idx}: Value {i}: type={type(val)}, shape={getattr(val, 'shape', 'N/A')}")
-                else:
-                    logger.info(f"Layer {layer_idx}: Got non-tuple result: {type(cross_modal_result)}")
-                    if hasattr(cross_modal_result, 'shape'):
-                        logger.info(f"Layer {layer_idx}: Shape: {cross_modal_result.shape}")
+                logger.info(f"Layer {layer_idx}: Successfully unpacked 3 values - vision: {vision_cross.shape}, text: {text_cross.shape}, attention: {attention_probs.shape if attention_probs is not None else 'None'}")
 
-                # COMPLETELY SAFE UNPACKING: Use index access instead of unpacking
-                if isinstance(cross_modal_result, tuple):
-                    if len(cross_modal_result) == 3:
-                        logger.info(f"Layer {layer_idx}: Processing 3 values as expected")
-                        vision_cross = cross_modal_result[0]
-                        text_cross = cross_modal_result[1]
-                        attn_weights = cross_modal_result[2]
-                    elif len(cross_modal_result) == 2:
-                        logger.info(f"Layer {layer_idx}: Processing 2 values, creating dummy attention weights")
-                        vision_cross = cross_modal_result[0]
-                        text_cross = cross_modal_result[1]
-                        # Create dummy attention weights
-                        attn_weights = {
-                            'i2t_attention': torch.zeros(1, 1, 1, 1, device=vision_feats.device),
-                            't2i_attention': torch.zeros(1, 1, 1, 1, device=vision_feats.device),
-                            'fusion_weights': {'alpha_i2t': 0.5, 'alpha_t2i': 0.5},
-                            'attention_entropy': torch.tensor(0.0, device=vision_feats.device),
-                            'cross_modal_similarity': torch.tensor(0.0, device=vision_feats.device)
-                        }
-                    elif len(cross_modal_result) == 1:
-                        logger.info(f"Layer {layer_idx}: Only got 1 value, using fallback")
-                        vision_cross = cross_modal_result[0]
-                        text_cross = text_feats  # Use input as fallback
-                        attn_weights = {}
-                    else:
-                        logger.error(f"Layer {layer_idx}: Got {len(cross_modal_result)} values from cross_modal_layer, using fallback")
-                        vision_cross = vision_feats
-                        text_cross = text_feats
-                        attn_weights = {}
+                # Store attention weights if available
+                if attention_probs is not None:
+                    attn_weights = {
+                        'attention_probs': attention_probs,
+                        'i2t_attention': attention_probs[:, :, 0:1, 1:],  # Vision to text attention
+                        't2i_attention': attention_probs[:, :, 1:, 0:1],  # Text to vision attention
+                        'fusion_weights': {'alpha_i2t': 0.5, 'alpha_t2i': 0.5},
+                        'attention_entropy': -(attention_probs * torch.log(attention_probs + 1e-8)).sum(dim=-1).mean(),
+                    }
                 else:
-                    # Not a tuple - treat as single tensor
-                    logger.info(f"Layer {layer_idx}: cross_modal_layer returned non-tuple, using fallback")
-                    vision_cross = cross_modal_result if torch.is_tensor(cross_modal_result) else vision_feats
-                    text_cross = text_feats
                     attn_weights = {}
 
             except Exception as e:
                 logger.error(f"Layer {layer_idx}: Cross-modal attention failed with exception: {e}")
+                # Fallback to identity
                 vision_cross = vision_feats
                 text_cross = text_feats
                 attn_weights = {}
