@@ -170,10 +170,14 @@ class CrossModalAttention(nn.Module):
         vision_output = output_features[:, 0]  # [B, hidden_dim]
         text_output = output_features[:, 1:]   # [B, seq_len, hidden_dim]
 
-        # Following FIBER pattern: always return 3 values, with attention_probs or None
-        attention_output = attention_probs if output_attentions else None
+        # Following FIBER pattern: always return 3 actual tensors (never None)
+        if output_attentions:
+            attention_output = attention_probs
+        else:
+            # Return a dummy tensor instead of None to ensure consistent unpacking
+            attention_output = torch.zeros_like(attention_probs[:, :1, :1, :1])  # Small dummy tensor
 
-        logger.info(f"CrossModalAttention: Returning vision: {vision_output.shape}, text: {text_output.shape}, attention: {attention_output.shape if attention_output is not None else 'None'}")
+        logger.info(f"CrossModalAttention: Returning vision: {vision_output.shape}, text: {text_output.shape}, attention: {attention_output.shape}")
         return vision_output, text_output, attention_output
 
 
