@@ -134,226 +134,71 @@ class CrossModalAttention(nn.Module):
     
     def forward(
         self,
-        vision_features: torch.Tensor,  # [B, vision_dim] 
-        text_features: torch.Tensor,   # [B, seq_len, text_dim]
-        text_mask: Optional[torch.Tensor] = None  # [B, seq_len]
-    ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
-        """
-        Args:
-            vision_features: [batch_size, vision_dim] 
-            text_features: [batch_size, seq_len, text_dim]
-            text_mask: [batch_size, seq_len] - 1 for valid tokens, 0 for padding
-            
-        Returns:
-            fused_vision: [batch_size, hidden_dim]
-            fused_text: [batch_size, seq_len, hidden_dim] 
-            attention_weights: Dict of attention patterns
-        """
-        # GUARANTEED to return exactly 3 values - no exceptions allowed to escape
+        vision_features: torch.Tensor,
+        text_features: torch.Tensor,
+        text_mask: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         B, seq_len, _ = text_features.shape
 
-        # Initialize default fallback values
-        fused_vision = None
-        fused_text = None
-        attention_weights = {
-            'text_self_attention': torch.zeros(1, 1, 1, 1, device=text_features.device),
-            'image_to_text_attention': torch.zeros(1, 1, 1, 1, device=text_features.device),
-            'text_to_image_attention': torch.zeros(1, 1, 1, 1, device=text_features.device),
-            'alpha_i2t': torch.tensor(0.5, device=text_features.device),
-            'alpha_t2i': torch.tensor(0.5, device=text_features.device)
-        }
+        # Initialize outputs at the start
+        i2t_output = vision_features  # Initialize with input as fallback
+        t2i_output = text_features   # Initialize with input as fallback
 
         try:
-            # Project to common hidden dimension
-            vision_proj = self.vision_proj(vision_features)  # [B, hidden_dim]
-            text_proj = self.text_proj(text_features)  # [B, seq_len, hidden_dim]
+            # Project and normalize features
+            vision_proj = self.vision_norm(self.vision_proj(vision_features))
+            text_proj = self.text_norm(self.text_proj(text_features))
 
-            # === Self-attention first (following FIBER) ===
-            vision_self = vision_proj  # No change needed for single token
+            # Image-to-text attention
+            i2t_q = self.i2t_q(vision_proj).unsqueeze(1)  # [B, 1, hidden_dim]
+            i2t_k, i2t_v = self.i2t_kv(text_proj).chunk(2, dim=-1)
 
-            # Text self-attention with safe error handling
-            text_self = text_proj  # Default fallback
-            text_attn = torch.zeros(B, self.num_heads, seq_len, seq_len, device=text_features.device)
+            # Reshape for attention
+            i2t_q = i2t_q.view(B, 1, self.num_heads, self.head_dim).transpose(1, 2)
+            i2t_k = i2t_k.view(B, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+            i2t_v = i2t_v.view(B, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
 
-            try:
-                text_normed = self.text_norm(text_proj)
-                text_qkv_raw = self.text_qkv(text_normed)
+            # Compute attention
+            i2t_attn = (i2t_q @ i2t_k.transpose(-2, -1)) * self.scale
+            if text_mask is not None:
+                i2t_attn = i2t_attn.masked_fill(~text_mask.unsqueeze(1).unsqueeze(2).bool(), float('-inf'))
+            i2t_attn = F.softmax(i2t_attn, dim=-1)
+            i2t_attn = self.attn_drop(i2t_attn)
 
-                # Safe reshape and unpack with proper error handling
-                expected_last_dim = self.hidden_dim * 3
-                if text_qkv_raw.size(-1) != expected_last_dim:
-                    logger.warning(f"QKV last dimension mismatch: got {text_qkv_raw.size(-1)}, expected {expected_last_dim}")
-                    # Pad or truncate to the expected size
-                    if text_qkv_raw.size(-1) < expected_last_dim:
-                        pad_size = expected_last_dim - text_qkv_raw.size(-1)
-                        padding = torch.zeros(*text_qkv_raw.shape[:-1], pad_size, device=text_qkv_raw.device, dtype=text_qkv_raw.dtype)
-                        text_qkv_raw = torch.cat([text_qkv_raw, padding], dim=-1)
-                    else:
-                        text_qkv_raw = text_qkv_raw[..., :expected_last_dim]
+            i2t_out = (i2t_attn @ i2t_v).transpose(1, 2).reshape(B, 1, self.hidden_dim)
+            i2t_out = i2t_out.squeeze(1)  # [B, hidden_dim]
+            i2t_output = self.output_proj(i2t_out)  # Assign to i2t_output here
+            i2t_output = self.proj_drop(i2t_output)
 
-                # Reshape with proper error handling
-                text_qkv = text_qkv_raw.reshape(B, seq_len, 3, self.num_heads, self.head_dim)
-                text_qkv = text_qkv.permute(2, 0, 3, 1, 4)  # [3, B, num_heads, seq_len, head_dim]
+            # Text-to-image attention
+            t2i_q = self.t2i_q(text_proj)  # [B, seq_len, hidden_dim]
+            t2i_k, t2i_v = self.t2i_kv(vision_proj).chunk(2, dim=-1)
+            t2i_k = t2i_k.unsqueeze(1)  # [B, 1, hidden_dim]
+            t2i_v = t2i_v.unsqueeze(1)  # [B, 1, hidden_dim]
 
-                # Safely unpack Q, K, V
-                if text_qkv.size(0) >= 3:
-                    text_q, text_k, text_v = text_qkv[0], text_qkv[1], text_qkv[2]
-                elif text_qkv.size(0) == 2:
-                    text_q, text_k = text_qkv[0], text_qkv[1]
-                    text_v = text_k  # Use key as value fallback
-                else:
-                    text_q = text_k = text_v = text_qkv[0]  # Use single tensor for all
+            # Reshape for attention
+            t2i_q = t2i_q.view(B, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+            t2i_k = t2i_k.view(B, 1, self.num_heads, self.head_dim).transpose(1, 2)
+            t2i_v = t2i_v.view(B, 1, self.num_heads, self.head_dim).transpose(1, 2)
 
-                # Text self-attention computation
-                text_attn = (text_q @ text_k.transpose(-2, -1)) * self.scale
+            # Compute attention
+            t2i_attn = (t2i_q @ t2i_k.transpose(-2, -1)) * self.scale
+            t2i_attn = F.softmax(t2i_attn, dim=-1)
+            t2i_attn = self.attn_drop(t2i_attn)
 
-                # Add relative position bias
-                if self.use_relative_pos:
-                    try:
-                        rel_pos_bias = self.get_relative_pos_bias(seq_len)
-                        if rel_pos_bias is not None:
-                            text_attn = text_attn + rel_pos_bias.unsqueeze(0)
-                    except:
-                        pass  # Continue without relative position bias
-
-                # Apply text mask
-                if text_mask is not None:
-                    text_mask_expanded = text_mask.unsqueeze(1).unsqueeze(2)  # [B, 1, 1, seq_len]
-                    text_attn = text_attn.masked_fill(~text_mask_expanded.bool(), -1e9)
-
-                text_attn = F.softmax(text_attn, dim=-1)
-                text_attn = self.attn_drop(text_attn)
-
-                text_self = (text_attn @ text_v).transpose(1, 2).reshape(B, seq_len, self.hidden_dim)
-                text_self = text_proj + self.proj_drop(text_self)  # Residual connection
-
-            except Exception as e:
-                logger.warning(f"Text self-attention failed, using fallback: {e}")
-                # text_self and text_attn already set to fallback values above
-
-            # === Cross-modal attention (FIBER-style) ===
-
-            # Image-to-Text attention
-            i2t_out = vision_proj  # Default fallback
-            i2t_attn = torch.zeros(B, self.num_heads, 1, seq_len, device=text_features.device)
-
-            try:
-                # Use vision as query, text as key-value
-                vision_q = vision_proj.unsqueeze(1).repeat(1, seq_len, 1)  # [B, seq_len, hidden_dim]
-                vision_q = vision_q.view(B, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-
-                text_k = text_self.view(B, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-                text_v = text_self.view(B, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-
-                i2t_attn = (vision_q @ text_k.transpose(-2, -1)) * self.scale
-
-                if text_mask is not None:
-                    text_mask_expanded = text_mask.unsqueeze(1).unsqueeze(1)  # [B, 1, 1, seq_len]
-                    i2t_attn = i2t_attn.masked_fill(~text_mask_expanded.bool(), -1e9)
-
-                i2t_attn = F.softmax(i2t_attn, dim=-1)
-                i2t_out = (i2t_attn @ text_v).transpose(1, 2).reshape(B, seq_len, self.hidden_dim)
-                i2t_out = i2t_out.mean(dim=1)  # Pool to single vision token
-
-            except Exception as e:
-                logger.warning(f"Image-to-text attention failed, using fallback: {e}")
-                # i2t_out and i2t_attn already set to fallback values above
-
-            # Text-to-Image attention
-            t2i_out = text_self  # Default fallback
-            t2i_attn = torch.zeros(B, self.num_heads, seq_len, 1, device=text_features.device)
-
-            try:
-                # Use text as query, vision as key-value
-                text_q = text_self.view(B, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-
-                # Properly handle vision key/value dimensions
-                vision_reshaped = vision_proj.view(B, self.num_heads, self.head_dim)  # [B, num_heads, head_dim]
-                vision_k = vision_reshaped.unsqueeze(2)  # [B, num_heads, 1, head_dim]
-                vision_v = vision_k.clone()  # Same for key and value
-
-                t2i_attn = (text_q @ vision_k.transpose(-2, -1)) * self.scale
-                t2i_attn = F.softmax(t2i_attn, dim=-1)
-
-                # Safe tensor computation for reshape
-                t2i_out = (t2i_attn @ vision_v)  # [B, num_heads, seq_len, head_dim]
-                t2i_out = t2i_out.transpose(1, 2).contiguous()  # [B, seq_len, num_heads, head_dim]
-
-                # Verify dimensions match before reshape
-                if t2i_out.size(2) * t2i_out.size(3) == self.hidden_dim:
-                    t2i_out = t2i_out.reshape(B, seq_len, self.hidden_dim)
-                else:
-                    # Fallback: flatten and project to correct size
-                    t2i_out = t2i_out.view(B, seq_len, -1)
-                    if t2i_out.size(-1) != self.hidden_dim:
-                        # Use adaptive pooling to get correct dimensions
-                        t2i_out = F.adaptive_avg_pool1d(t2i_out.transpose(1, 2), self.hidden_dim).transpose(1, 2)
-
-            except Exception as e:
-                logger.warning(f"Text-to-image attention failed, using fallback: {e}")
-                # t2i_out and t2i_attn already set to fallback values above
-
-            # Final projections and residual connections
-            i2t_output = self.dropout(self.output_proj(i2t_output))
-            t2i_output = self.dropout(self.output_proj(t2i_output))
+            t2i_out = (t2i_attn @ t2i_v).transpose(1, 2).reshape(B, seq_len, self.hidden_dim)
+            t2i_output = self.output_proj(t2i_out)  # Assign to t2i_output here
+            t2i_output = self.proj_drop(t2i_output)
 
             # Apply cross-modal normalization
             i2t_output = self.cross_norm(i2t_output + vision_features)
             t2i_output = self.cross_norm(t2i_output + text_features)
 
-            # Adaptive fusion with learnable weights
-            try:
-                fused_vision = self.alpha_i2t * i2t_out + (1 - self.alpha_i2t) * vision_self
-                fused_text = self.alpha_t2i * t2i_out + (1 - self.alpha_t2i) * text_self
-            except Exception as e:
-                logger.warning(f"Adaptive fusion failed, using fallback: {e}")
-                # Use self-attention results as fallback
-                fused_vision = vision_self
-                fused_text = text_self
-
-            # Update attention weights for analysis
-            attention_weights = {
-                'text_self_attention': text_attn.detach(),
-                'image_to_text_attention': i2t_attn.detach(),
-                'text_to_image_attention': t2i_attn.detach(),
-                'alpha_i2t': self.alpha_i2t.detach(),
-                'alpha_t2i': self.alpha_t2i.detach()
-            }
-
         except Exception as e:
-            logger.error(f"FIBER cross-modal attention completely failed: {e}")
-            # Ultimate fallback: project input features to correct dimensions
-            try:
-                fused_vision = self.vision_proj(vision_features)
-                fused_text = self.text_proj(text_features)
-            except Exception as proj_e:
-                logger.error(f"Even projection failed: {proj_e}")
-                # Final ultimate fallback: pad/truncate to expected dimensions
-                if vision_features.size(-1) != self.hidden_dim:
-                    if vision_features.size(-1) < self.hidden_dim:
-                        pad_size = self.hidden_dim - vision_features.size(-1)
-                        fused_vision = torch.cat([vision_features, torch.zeros(*vision_features.shape[:-1], pad_size, device=vision_features.device)], dim=-1)
-                    else:
-                        fused_vision = vision_features[..., :self.hidden_dim]
-                else:
-                    fused_vision = vision_features
+            logger.error(f"Cross-modal attention failed: {e}")
+            # We already have fallback values from initialization
 
-                if text_features.size(-1) != self.hidden_dim:
-                    if text_features.size(-1) < self.hidden_dim:
-                        pad_size = self.hidden_dim - text_features.size(-1)
-                        fused_text = torch.cat([text_features, torch.zeros(*text_features.shape[:-1], pad_size, device=text_features.device)], dim=-1)
-                    else:
-                        fused_text = text_features[..., :self.hidden_dim]
-                else:
-                    fused_text = text_features
-
-        # GUARANTEE: This method ALWAYS returns exactly 3 values
-        if fused_vision is None:
-            fused_vision = torch.zeros(B, self.hidden_dim, device=text_features.device)
-        if fused_text is None:
-            fused_text = torch.zeros(B, seq_len, self.hidden_dim, device=text_features.device)
-
-        return fused_vision, fused_text, attention_weights
+        return i2t_output, t2i_output
 
 
 class FIBERCrossModalFusion(nn.Module):
