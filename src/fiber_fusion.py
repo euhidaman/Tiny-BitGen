@@ -54,8 +54,8 @@ class BitNetLinear(nn.Module):
 
 class CrossModalAttention(nn.Module):
     """
-    FIBER-inspired Cross-Modal Attention with hierarchical fusion
-    Supports image-to-text and text-to-image attention with relative positioning
+    FIBER-style Cross-Modal Attention following the actual FIBER architecture
+    Based on RobertaSelfAttention from the real FIBER repository
     """
     
     def __init__(
@@ -67,183 +67,110 @@ class CrossModalAttention(nn.Module):
         qkv_bias: bool = True,
         attn_drop: float = 0.1,
         proj_drop: float = 0.1,
-        use_relative_pos: bool = True
+        use_relative_pos: bool = False  # FIBER doesn't use relative pos by default
     ):
         super().__init__()
-        self.vision_dim = vision_dim
-        self.text_dim = text_dim
         self.hidden_dim = hidden_dim
         self.num_heads = num_heads
         self.head_dim = hidden_dim // num_heads
-        self.scale = self.head_dim ** -0.5
-        self.use_relative_pos = use_relative_pos
-        
+        self.all_head_size = num_heads * self.head_dim
+
         assert hidden_dim % num_heads == 0, f"hidden_dim {hidden_dim} not divisible by num_heads {num_heads}"
         
-        # Vision feature projection
+        # Project vision and text to common dimension first
         self.vision_proj = BitNetLinear(vision_dim, hidden_dim, bias=qkv_bias)
-        self.vision_qkv = BitNetLinear(hidden_dim, hidden_dim * 3, bias=qkv_bias)
-        
-        # Text feature projection  
         self.text_proj = BitNetLinear(text_dim, hidden_dim, bias=qkv_bias)
-        self.text_qkv = BitNetLinear(hidden_dim, hidden_dim * 3, bias=qkv_bias)
-        
-        # Cross-modal projections (FIBER-style)
-        # Image-to-text attention
-        self.i2t_q = BitNetLinear(hidden_dim, hidden_dim, bias=qkv_bias)
-        self.i2t_kv = BitNetLinear(hidden_dim, hidden_dim * 2, bias=qkv_bias)
-        
-        # Text-to-image attention  
-        self.t2i_q = BitNetLinear(hidden_dim, hidden_dim, bias=qkv_bias)
-        self.t2i_kv = BitNetLinear(hidden_dim, hidden_dim * 2, bias=qkv_bias)
-        
-        # Normalization layers
-        self.vision_norm = nn.LayerNorm(hidden_dim)
-        self.text_norm = nn.LayerNorm(hidden_dim)
-        self.cross_norm = nn.LayerNorm(hidden_dim)
 
-        # Output projections
-        self.output_proj = BitNetLinear(hidden_dim, hidden_dim)
-        self.dropout = nn.Dropout(proj_drop)
-        self.attn_drop = nn.Dropout(attn_drop)
+        # Standard transformer attention layers (following FIBER)
+        self.query = BitNetLinear(hidden_dim, self.all_head_size, bias=qkv_bias)
+        self.key = BitNetLinear(hidden_dim, self.all_head_size, bias=qkv_bias)
+        self.value = BitNetLinear(hidden_dim, self.all_head_size, bias=qkv_bias)
 
-        # Add learnable fusion weights
-        self.alpha_i2t = nn.Parameter(torch.tensor(0.5))
-        self.alpha_t2i = nn.Parameter(torch.tensor(0.5))
+        # Output projection and normalization
+        self.output_proj = BitNetLinear(self.all_head_size, hidden_dim)
+        self.layer_norm = nn.LayerNorm(hidden_dim)
+        self.dropout = nn.Dropout(attn_drop)
+        self.proj_dropout = nn.Dropout(proj_drop)
 
-        # Fix: Add projection dropout as class attribute
-        self.proj_drop = nn.Dropout(proj_drop)
+    def transpose_for_scores(self, x):
+        """Reshape for multi-head attention"""
+        new_x_shape = x.size()[:-1] + (self.num_heads, self.head_dim)
+        x = x.view(*new_x_shape)
+        return x.permute(0, 2, 1, 3)
 
-    def get_relative_pos_bias(self, seq_len: int) -> torch.Tensor:
-        """Compute relative position bias for text sequence"""
-        if not self.use_relative_pos:
-            return None
-            
-        # Create relative position indices
-        coords = torch.arange(seq_len, device=self.relative_pos_embed.weight.device)
-        relative_coords = coords[:, None] - coords[None, :]  # [seq_len, seq_len]
-        
-        # Clip to max range and shift to positive
-        relative_coords = torch.clamp(
-            relative_coords, -self.max_relative_pos, self.max_relative_pos
-        ) + self.max_relative_pos
-        
-        # Get embeddings and permute for attention
-        relative_pos_bias = self.relative_pos_embed(relative_coords)  # [seq_len, seq_len, num_heads]
-        return relative_pos_bias.permute(2, 0, 1)  # [num_heads, seq_len, seq_len]
-    
     def forward(
         self,
-        vision_features: torch.Tensor,
-        text_features: torch.Tensor,
+        vision_features: torch.Tensor,  # [B, vision_dim]
+        text_features: torch.Tensor,   # [B, seq_len, text_dim]
         text_mask: Optional[torch.Tensor] = None,
-        return_attention: bool = True
-    ) -> Union[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]]:
+        output_attentions: bool = False
+    ) -> Tuple[torch.Tensor, torch.Tensor]:  # Always returns exactly 2 values
         """
-        Args:
-            vision_features: [batch_size, vision_dim]
-            text_features: [batch_size, seq_len, text_dim]
-            text_mask: [batch_size, seq_len] - 1 for valid tokens, 0 for padding
-            return_attention: Whether to return attention weights (3rd output)
+        FIBER-style cross-modal attention
 
         Returns:
-            If return_attention=True: (fused_vision, fused_text, attention_info)
-            If return_attention=False: (fused_vision, fused_text)
+            vision_output: [B, hidden_dim]
+            text_output: [B, seq_len, hidden_dim]
         """
-        B, seq_len, _ = text_features.shape
+        B, seq_len = text_features.shape[:2]
 
-        # Initialize outputs at the start
-        i2t_output = vision_features  # Initialize with input as fallback
-        t2i_output = text_features   # Initialize with input as fallback
+        # Project to common dimension
+        vision_proj = self.vision_proj(vision_features)  # [B, hidden_dim]
+        text_proj = self.text_proj(text_features)        # [B, seq_len, hidden_dim]
 
-        # Initialize attention info (only used if return_attention=True)
-        attention_info = {
-            'i2t_attention': torch.zeros(B, self.num_heads, 1, seq_len, device=vision_features.device),
-            't2i_attention': torch.zeros(B, self.num_heads, seq_len, 1, device=vision_features.device),
-            'fusion_weights': {'alpha_i2t': 0.5, 'alpha_t2i': 0.5},
-            'attention_entropy': torch.tensor(0.0, device=vision_features.device),
-            'cross_modal_similarity': torch.tensor(0.0, device=vision_features.device)
-        }
+        # Add vision as first token to text sequence (FIBER-style)
+        vision_expanded = vision_proj.unsqueeze(1)  # [B, 1, hidden_dim]
+        combined_features = torch.cat([vision_expanded, text_proj], dim=1)  # [B, seq_len+1, hidden_dim]
 
-        try:
-            # Project and normalize features
-            vision_proj = self.vision_norm(self.vision_proj(vision_features))
-            text_proj = self.text_norm(self.text_proj(text_features))
-
-            # Image-to-text attention
-            i2t_q = self.i2t_q(vision_proj).unsqueeze(1)  # [B, 1, hidden_dim]
-            i2t_k, i2t_v = self.i2t_kv(text_proj).chunk(2, dim=-1)
-
-            # Reshape for attention
-            i2t_q = i2t_q.view(B, 1, self.num_heads, self.head_dim).transpose(1, 2)
-            i2t_k = i2t_k.view(B, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-            i2t_v = i2t_v.view(B, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-
-            # Compute attention
-            i2t_attn = (i2t_q @ i2t_k.transpose(-2, -1)) * self.scale
-            if text_mask is not None:
-                i2t_attn = i2t_attn.masked_fill(~text_mask.unsqueeze(1).unsqueeze(2).bool(), float('-inf'))
-            i2t_attn = F.softmax(i2t_attn, dim=-1)
-            i2t_attn = self.attn_drop(i2t_attn)
-
-            # Store attention for analysis (only if requested)
-            if return_attention:
-                attention_info['i2t_attention'] = i2t_attn.detach()
-                attention_info['attention_entropy'] = -(i2t_attn * torch.log(i2t_attn + 1e-8)).sum(dim=-1).mean()
-
-            i2t_out = (i2t_attn @ i2t_v).transpose(1, 2).reshape(B, 1, self.hidden_dim)
-            i2t_out = i2t_out.squeeze(1)  # [B, hidden_dim]
-            i2t_output = self.output_proj(i2t_out)
-            i2t_output = self.proj_drop(i2t_output)
-
-            # Text-to-image attention
-            t2i_q = self.t2i_q(text_proj)  # [B, seq_len, hidden_dim]
-            t2i_k, t2i_v = self.t2i_kv(vision_proj).chunk(2, dim=-1)
-            t2i_k = t2i_k.unsqueeze(1)  # [B, 1, hidden_dim]
-            t2i_v = t2i_v.unsqueeze(1)  # [B, 1, hidden_dim]
-
-            # Reshape for attention
-            t2i_q = t2i_q.view(B, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-            t2i_k = t2i_k.view(B, 1, self.num_heads, self.head_dim).transpose(1, 2)
-            t2i_v = t2i_v.view(B, 1, self.num_heads, self.head_dim).transpose(1, 2)
-
-            # Compute attention
-            t2i_attn = (t2i_q @ t2i_k.transpose(-2, -1)) * self.scale
-            t2i_attn = F.softmax(t2i_attn, dim=-1)
-            t2i_attn = self.attn_drop(t2i_attn)
-
-            # Store attention for analysis (only if requested)
-            if return_attention:
-                attention_info['t2i_attention'] = t2i_attn.detach()
-                attention_info['fusion_weights'] = {
-                    'alpha_i2t': self.alpha_i2t.detach().item(),
-                    'alpha_t2i': self.alpha_t2i.detach().item()
-                }
-                # Compute cross-modal similarity
-                vision_norm = F.normalize(i2t_output, dim=-1)
-                text_norm = F.normalize(t2i_output.mean(dim=1), dim=-1)
-                attention_info['cross_modal_similarity'] = (vision_norm * text_norm).sum(dim=-1).mean()
-
-            t2i_out = (t2i_attn @ t2i_v).transpose(1, 2).reshape(B, seq_len, self.hidden_dim)
-            t2i_output = self.output_proj(t2i_out)
-            t2i_output = self.proj_drop(t2i_output)
-
-            # Apply cross-modal normalization
-            i2t_output = self.cross_norm(i2t_output + vision_features)
-            t2i_output = self.cross_norm(t2i_output + text_features)
-
-        except Exception as e:
-            logger.error(f"Cross-modal attention failed: {e}")
-            # We already have fallback values from initialization
-
-        # GUARANTEE: Return exactly the right number of values based on return_attention
-        logger.info(f"CrossModalAttention: return_attention={return_attention}")
-        if return_attention:
-            logger.info(f"CrossModalAttention: Returning 3 values - vision: {i2t_output.shape}, text: {t2i_output.shape}, attention_info: {type(attention_info)}")
-            return i2t_output, t2i_output, attention_info
+        # Create attention mask for combined sequence
+        if text_mask is not None:
+            # Add mask for vision token (always attend)
+            vision_mask = torch.ones(B, 1, device=text_mask.device, dtype=text_mask.dtype)
+            combined_mask = torch.cat([vision_mask, text_mask], dim=1)  # [B, seq_len+1]
+            # Convert to attention mask format
+            attention_mask = combined_mask.unsqueeze(1).unsqueeze(2)  # [B, 1, 1, seq_len+1]
+            attention_mask = (1.0 - attention_mask) * -10000.0
         else:
-            logger.info(f"CrossModalAttention: Returning 2 values - vision: {i2t_output.shape}, text: {t2i_output.shape}")
-            return i2t_output, t2i_output
+            attention_mask = None
+
+        # Self-attention on combined sequence
+        query_layer = self.transpose_for_scores(self.query(combined_features))
+        key_layer = self.transpose_for_scores(self.key(combined_features))
+        value_layer = self.transpose_for_scores(self.value(combined_features))
+
+        # Compute attention scores
+        attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
+        attention_scores = attention_scores / math.sqrt(self.head_dim)
+
+        # Apply attention mask
+        if attention_mask is not None:
+            attention_scores = attention_scores + attention_mask
+
+        # Normalize attention probabilities
+        attention_probs = F.softmax(attention_scores, dim=-1)
+        attention_probs = self.dropout(attention_probs)
+
+        # Apply attention to values
+        context_layer = torch.matmul(attention_probs, value_layer)
+
+        # Reshape output
+        context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
+        new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
+        context_layer = context_layer.view(*new_context_layer_shape)
+
+        # Project output
+        context_layer = self.output_proj(context_layer)
+        context_layer = self.proj_dropout(context_layer)
+
+        # Add residual connection and layer norm
+        output_features = self.layer_norm(context_layer + combined_features)
+
+        # Split back into vision and text
+        vision_output = output_features[:, 0]  # [B, hidden_dim]
+        text_output = output_features[:, 1:]   # [B, seq_len, hidden_dim]
+
+        # GUARANTEE: Always return exactly 2 values (following FIBER pattern)
+        return vision_output, text_output
 
 
 class FIBERCrossModalFusion(nn.Module):
@@ -377,14 +304,17 @@ class FIBERCrossModalFusion(nn.Module):
                     if hasattr(cross_modal_result, 'shape'):
                         logger.info(f"Layer {layer_idx}: Shape: {cross_modal_result.shape}")
 
-                # ROBUST UNPACKING: Handle any number of return values safely
+                # COMPLETELY SAFE UNPACKING: Use index access instead of unpacking
                 if isinstance(cross_modal_result, tuple):
                     if len(cross_modal_result) == 3:
-                        logger.info(f"Layer {layer_idx}: Unpacking 3 values as expected")
-                        vision_cross, text_cross, attn_weights = cross_modal_result
+                        logger.info(f"Layer {layer_idx}: Processing 3 values as expected")
+                        vision_cross = cross_modal_result[0]
+                        text_cross = cross_modal_result[1]
+                        attn_weights = cross_modal_result[2]
                     elif len(cross_modal_result) == 2:
                         logger.warning(f"Layer {layer_idx}: Only got 2 values, expected 3 with return_attention={return_attention}")
-                        vision_cross, text_cross = cross_modal_result
+                        vision_cross = cross_modal_result[0]
+                        text_cross = cross_modal_result[1]
                         # Create dummy attention weights
                         attn_weights = {
                             'i2t_attention': torch.zeros(1, 1, 1, 1, device=vision_feats.device),
@@ -395,7 +325,6 @@ class FIBERCrossModalFusion(nn.Module):
                         }
                     elif len(cross_modal_result) == 1:
                         logger.warning(f"Layer {layer_idx}: Only got 1 value, expected 3")
-                        # Only got one tensor back - use as vision output
                         vision_cross = cross_modal_result[0]
                         text_cross = text_feats  # Use input as fallback
                         attn_weights = {}
