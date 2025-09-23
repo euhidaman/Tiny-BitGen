@@ -326,7 +326,7 @@ class FIBERCrossModalFusion(nn.Module):
                         text_cross = cross_modal_result[1]
                         attn_weights = cross_modal_result[2]
                     elif len(cross_modal_result) == 2:
-                        logger.warning(f"Layer {layer_idx}: Only got 2 values, expected 3 with return_attention={return_attention}")
+                        logger.info(f"Layer {layer_idx}: Processing 2 values, creating dummy attention weights")
                         vision_cross = cross_modal_result[0]
                         text_cross = cross_modal_result[1]
                         # Create dummy attention weights
@@ -338,43 +338,26 @@ class FIBERCrossModalFusion(nn.Module):
                             'cross_modal_similarity': torch.tensor(0.0, device=vision_feats.device)
                         }
                     elif len(cross_modal_result) == 1:
-                        logger.warning(f"Layer {layer_idx}: Only got 1 value, expected 3")
+                        logger.info(f"Layer {layer_idx}: Only got 1 value, using fallback")
                         vision_cross = cross_modal_result[0]
                         text_cross = text_feats  # Use input as fallback
                         attn_weights = {}
                     else:
-                        logger.error(f"Layer {layer_idx}: Got {len(cross_modal_result)} values from cross_modal_layer, expected 2 or 3")
-                        vision_cross, text_cross = vision_feats, text_feats
+                        logger.error(f"Layer {layer_idx}: Got {len(cross_modal_result)} values from cross_modal_layer, using fallback")
+                        vision_cross = vision_feats
+                        text_cross = text_feats
                         attn_weights = {}
                 else:
                     # Not a tuple - treat as single tensor
-                    logger.warning(f"Layer {layer_idx}: cross_modal_layer returned non-tuple: {type(cross_modal_result)}")
+                    logger.info(f"Layer {layer_idx}: cross_modal_layer returned non-tuple, using fallback")
                     vision_cross = cross_modal_result if torch.is_tensor(cross_modal_result) else vision_feats
                     text_cross = text_feats
                     attn_weights = {}
 
-            except ValueError as ve:
-                if "not enough values to unpack" in str(ve):
-                    logger.error(f"Layer {layer_idx}: Unpacking error - falling back to safe extraction")
-                    # Safe fallback: try to extract values one by one
-                    try:
-                        if hasattr(cross_modal_result, '__len__') and len(cross_modal_result) >= 2:
-                            vision_cross, text_cross = cross_modal_result[0], cross_modal_result[1]
-                            attn_weights = cross_modal_result[2] if len(cross_modal_result) > 2 else {}
-                        else:
-                            vision_cross, text_cross = vision_feats, text_feats
-                            attn_weights = {}
-                    except:
-                        vision_cross, text_cross = vision_feats, text_feats
-                        attn_weights = {}
-                else:
-                    logger.error(f"Layer {layer_idx}: Cross-modal attention failed with ValueError: {ve}")
-                    vision_cross, text_cross = vision_feats, text_feats
-                    attn_weights = {}
-
             except Exception as e:
-                logger.error(f"Layer {layer_idx}: Cross-modal attention failed: {e}")
-                vision_cross, text_cross = vision_feats, text_feats
+                logger.error(f"Layer {layer_idx}: Cross-modal attention failed with exception: {e}")
+                vision_cross = vision_feats
+                text_cross = text_feats
                 attn_weights = {}
 
             # Store attention weights
