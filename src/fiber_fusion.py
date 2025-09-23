@@ -104,14 +104,16 @@ class CrossModalAttention(nn.Module):
         text_features: torch.Tensor,   # [B, seq_len, text_dim]
         text_mask: Optional[torch.Tensor] = None,
         output_attentions: bool = False
-    ) -> Tuple[torch.Tensor, torch.Tensor]:  # Always returns exactly 2 values
+    ) -> Union[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor, Dict]]:
         """
         FIBER-style cross-modal attention
 
         Returns:
-            vision_output: [B, hidden_dim]
-            text_output: [B, seq_len, hidden_dim]
+            If output_attentions=False: (vision_output, text_output)
+            If output_attentions=True: (vision_output, text_output, attention_info)
         """
+        logger.info(f"CrossModalAttention: return_attention={output_attentions}")
+
         B, seq_len = text_features.shape[:2]
 
         # Project to common dimension
@@ -169,8 +171,20 @@ class CrossModalAttention(nn.Module):
         vision_output = output_features[:, 0]  # [B, hidden_dim]
         text_output = output_features[:, 1:]   # [B, seq_len, hidden_dim]
 
-        # GUARANTEE: Always return exactly 2 values (following FIBER pattern)
-        return vision_output, text_output
+        if output_attentions:
+            # Create attention info dictionary
+            attention_info = {
+                'i2t_attention': attention_probs[:, :, 0:1, 1:],  # Vision to text attention
+                't2i_attention': attention_probs[:, :, 1:, 0:1],  # Text to vision attention
+                'fusion_weights': {'alpha_i2t': 0.5, 'alpha_t2i': 0.5},
+                'attention_entropy': -(attention_probs * torch.log(attention_probs + 1e-8)).sum(dim=-1).mean(),
+                'cross_modal_similarity': torch.cosine_similarity(vision_output.mean(0), text_output.mean(1).mean(0), dim=0)
+            }
+            logger.info(f"CrossModalAttention: Returning 3 values - vision: {vision_output.shape}, text: {text_output.shape}, attention_info: {type(attention_info)}")
+            return vision_output, text_output, attention_info
+        else:
+            logger.info(f"CrossModalAttention: Returning 2 values - vision: {vision_output.shape}, text: {text_output.shape}")
+            return vision_output, text_output
 
 
 class FIBERCrossModalFusion(nn.Module):
