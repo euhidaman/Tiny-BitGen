@@ -97,33 +97,16 @@ class CrossModalAttention(nn.Module):
         self.t2i_q = BitNetLinear(hidden_dim, hidden_dim, bias=qkv_bias)
         self.t2i_kv = BitNetLinear(hidden_dim, hidden_dim * 2, bias=qkv_bias)
         
-        # Normalization layers (MISSING - this was causing the error!)
+        # Normalization layers
         self.vision_norm = nn.LayerNorm(hidden_dim)
         self.text_norm = nn.LayerNorm(hidden_dim)
-        self.norm_v = nn.LayerNorm(hidden_dim)
-        self.norm_t = nn.LayerNorm(hidden_dim)
-        self.norm_i2t = nn.LayerNorm(hidden_dim)
-        self.norm_t2i = nn.LayerNorm(hidden_dim)
-        
+        self.cross_norm = nn.LayerNorm(hidden_dim)
+
         # Output projections
-        self.vision_out = BitNetLinear(hidden_dim, hidden_dim)
-        self.text_out = BitNetLinear(hidden_dim, hidden_dim)
-        
-        # Dropout
+        self.output_proj = BitNetLinear(hidden_dim, hidden_dim)
+        self.dropout = nn.Dropout(proj_drop)
         self.attn_drop = nn.Dropout(attn_drop)
-        self.proj_drop = nn.Dropout(proj_drop)
-        
-        # Learnable mixing weights (FIBER-style)
-        self.alpha_i2t = nn.Parameter(torch.zeros(1))
-        self.alpha_t2i = nn.Parameter(torch.zeros(1))
-        
-        # Relative position encoding for text (if enabled)
-        if use_relative_pos:
-            self.max_relative_pos = 128
-            self.relative_pos_embed = nn.Embedding(
-                2 * self.max_relative_pos + 1, num_heads
-            )
-    
+
     def get_relative_pos_bias(self, seq_len: int) -> torch.Tensor:
         """Compute relative position bias for text sequence"""
         if not self.use_relative_pos:
@@ -302,6 +285,14 @@ class CrossModalAttention(nn.Module):
             except Exception as e:
                 logger.warning(f"Text-to-image attention failed, using fallback: {e}")
                 # t2i_out and t2i_attn already set to fallback values above
+
+            # Final projections and residual connections
+            i2t_output = self.dropout(self.output_proj(i2t_output))
+            t2i_output = self.dropout(self.output_proj(t2i_output))
+
+            # Apply cross-modal normalization
+            i2t_output = self.cross_norm(i2t_output + vision_features)
+            t2i_output = self.cross_norm(t2i_output + text_features)
 
             # Adaptive fusion with learnable weights
             try:
