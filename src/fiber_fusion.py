@@ -6,7 +6,7 @@ Advanced cross-modal transformer blocks with hierarchical fusion
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 import math
 import logging
 
@@ -136,13 +136,34 @@ class CrossModalAttention(nn.Module):
         self,
         vision_features: torch.Tensor,
         text_features: torch.Tensor,
-        text_mask: Optional[torch.Tensor] = None
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        text_mask: Optional[torch.Tensor] = None,
+        return_attention: bool = True
+    ) -> Union[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]]:
+        """
+        Args:
+            vision_features: [batch_size, vision_dim]
+            text_features: [batch_size, seq_len, text_dim]
+            text_mask: [batch_size, seq_len] - 1 for valid tokens, 0 for padding
+            return_attention: Whether to return attention weights (3rd output)
+
+        Returns:
+            If return_attention=True: (fused_vision, fused_text, attention_info)
+            If return_attention=False: (fused_vision, fused_text)
+        """
         B, seq_len, _ = text_features.shape
 
         # Initialize outputs at the start
         i2t_output = vision_features  # Initialize with input as fallback
         t2i_output = text_features   # Initialize with input as fallback
+
+        # Initialize attention info (only used if return_attention=True)
+        attention_info = {
+            'i2t_attention': torch.zeros(B, self.num_heads, 1, seq_len, device=vision_features.device),
+            't2i_attention': torch.zeros(B, self.num_heads, seq_len, 1, device=vision_features.device),
+            'fusion_weights': {'alpha_i2t': 0.5, 'alpha_t2i': 0.5},
+            'attention_entropy': torch.tensor(0.0, device=vision_features.device),
+            'cross_modal_similarity': torch.tensor(0.0, device=vision_features.device)
+        }
 
         try:
             # Project and normalize features
@@ -165,9 +186,14 @@ class CrossModalAttention(nn.Module):
             i2t_attn = F.softmax(i2t_attn, dim=-1)
             i2t_attn = self.attn_drop(i2t_attn)
 
+            # Store attention for analysis (only if requested)
+            if return_attention:
+                attention_info['i2t_attention'] = i2t_attn.detach()
+                attention_info['attention_entropy'] = -(i2t_attn * torch.log(i2t_attn + 1e-8)).sum(dim=-1).mean()
+
             i2t_out = (i2t_attn @ i2t_v).transpose(1, 2).reshape(B, 1, self.hidden_dim)
             i2t_out = i2t_out.squeeze(1)  # [B, hidden_dim]
-            i2t_output = self.output_proj(i2t_out)  # Assign to i2t_output here
+            i2t_output = self.output_proj(i2t_out)
             i2t_output = self.proj_drop(i2t_output)
 
             # Text-to-image attention
@@ -186,8 +212,20 @@ class CrossModalAttention(nn.Module):
             t2i_attn = F.softmax(t2i_attn, dim=-1)
             t2i_attn = self.attn_drop(t2i_attn)
 
+            # Store attention for analysis (only if requested)
+            if return_attention:
+                attention_info['t2i_attention'] = t2i_attn.detach()
+                attention_info['fusion_weights'] = {
+                    'alpha_i2t': self.alpha_i2t.detach().item(),
+                    'alpha_t2i': self.alpha_t2i.detach().item()
+                }
+                # Compute cross-modal similarity
+                vision_norm = F.normalize(i2t_output, dim=-1)
+                text_norm = F.normalize(t2i_output.mean(dim=1), dim=-1)
+                attention_info['cross_modal_similarity'] = (vision_norm * text_norm).sum(dim=-1).mean()
+
             t2i_out = (t2i_attn @ t2i_v).transpose(1, 2).reshape(B, seq_len, self.hidden_dim)
-            t2i_output = self.output_proj(t2i_out)  # Assign to t2i_output here
+            t2i_output = self.output_proj(t2i_out)
             t2i_output = self.proj_drop(t2i_output)
 
             # Apply cross-modal normalization
@@ -198,7 +236,11 @@ class CrossModalAttention(nn.Module):
             logger.error(f"Cross-modal attention failed: {e}")
             # We already have fallback values from initialization
 
-        return i2t_output, t2i_output
+        # GUARANTEE: Return exactly the right number of values based on return_attention
+        if return_attention:
+            return i2t_output, t2i_output, attention_info
+        else:
+            return i2t_output, t2i_output
 
 
 class FIBERCrossModalFusion(nn.Module):
@@ -206,7 +248,7 @@ class FIBERCrossModalFusion(nn.Module):
     FIBER-inspired Multi-Layer Cross-Modal Fusion
     Implements hierarchical cross-modal transformer blocks
     """
-    
+
     def __init__(
         self,
         vision_dim: int,
@@ -236,7 +278,7 @@ class FIBERCrossModalFusion(nn.Module):
                 use_relative_pos=use_relative_pos
             ) for i in range(num_layers)
         ])
-        
+
         # Feed-forward networks (FIBER-style)
         self.vision_ffns = nn.ModuleList([
             nn.Sequential(
@@ -294,7 +336,8 @@ class FIBERCrossModalFusion(nn.Module):
         vision_features: torch.Tensor,  # [B, vision_dim]
         text_features: torch.Tensor,   # [B, seq_len, text_dim]
         text_mask: Optional[torch.Tensor] = None,  # [B, seq_len]
-        return_intermediate: bool = False
+        return_intermediate: bool = False,
+        return_attention: bool = True  # New parameter to control attention output
     ) -> Dict[str, torch.Tensor]:
         """
         Forward pass through FIBER-style cross-modal fusion
@@ -316,58 +359,32 @@ class FIBERCrossModalFusion(nn.Module):
         for layer_idx, (cross_modal_layer, vision_ffn, text_ffn) in enumerate(
             zip(self.cross_modal_layers, self.vision_ffns, self.text_ffns)
         ):
-            # FIXED: Safe unpacking for cross-modal attention with proper error handling
             try:
-                cross_modal_result = cross_modal_layer(vision_feats, text_feats, text_mask)
+                # Call with return_attention parameter
+                cross_modal_result = cross_modal_layer(vision_feats, text_feats, text_mask, return_attention)
 
-                # Handle different return formats
-                if isinstance(cross_modal_result, tuple):
-                    if len(cross_modal_result) >= 3:
-                        vision_cross, text_cross, attn_weights = cross_modal_result[0], cross_modal_result[1], cross_modal_result[2]
-                    elif len(cross_modal_result) == 2:
-                        logger.warning(f"Layer {layer_idx}: cross_modal_layer returned only 2 values instead of 3, creating dummy attention weights")
-                        vision_cross, text_cross = cross_modal_result[0], cross_modal_result[1]
-                        attn_weights = {
-                            'text_self_attention': torch.zeros(1, 1, 1, 1, device=vision_feats.device),
-                            'image_to_text_attention': torch.zeros(1, 1, 1, 1, device=vision_feats.device),
-                            'text_to_image_attention': torch.zeros(1, 1, 1, 1, device=vision_feats.device),
-                            'alpha_i2t': torch.tensor(0.0, device=vision_feats.device),
-                            'alpha_t2i': torch.tensor(0.0, device=vision_feats.device)
-                        }
-                    else:
-                        logger.error(f"Layer {layer_idx}: cross_modal_layer returned {len(cross_modal_result)} values, expected 3")
-                        # Fallback: use input features unchanged
-                        vision_cross, text_cross = vision_feats, text_feats
-                        attn_weights = {
-                            'text_self_attention': torch.zeros(1, 1, 1, 1, device=vision_feats.device),
-                            'image_to_text_attention': torch.zeros(1, 1, 1, 1, device=vision_feats.device),
-                            'text_to_image_attention': torch.zeros(1, 1, 1, 1, device=vision_feats.device),
-                            'alpha_i2t': torch.tensor(0.0, device=vision_feats.device),
-                            'alpha_t2i': torch.tensor(0.0, device=vision_feats.device)
-                        }
-                else:
-                    logger.error(f"Layer {layer_idx}: cross_modal_layer returned non-tuple result: {type(cross_modal_result)}")
-                    # Fallback: use input features unchanged
-                    vision_cross, text_cross = vision_feats, text_feats
+                # Handle different return formats based on return_attention
+                if return_attention and len(cross_modal_result) == 3:
+                    vision_cross, text_cross, attn_weights = cross_modal_result
+                elif len(cross_modal_result) == 2:
+                    vision_cross, text_cross = cross_modal_result
+                    # Create dummy attention weights if needed
                     attn_weights = {
-                        'text_self_attention': torch.zeros(1, 1, 1, 1, device=vision_feats.device),
-                        'image_to_text_attention': torch.zeros(1, 1, 1, 1, device=vision_feats.device),
-                        'text_to_image_attention': torch.zeros(1, 1, 1, 1, device=vision_feats.device),
-                        'alpha_i2t': torch.tensor(0.0, device=vision_feats.device),
-                        'alpha_t2i': torch.tensor(0.0, device=vision_feats.device)
+                        'i2t_attention': torch.zeros(1, 1, 1, 1, device=vision_feats.device),
+                        't2i_attention': torch.zeros(1, 1, 1, 1, device=vision_feats.device),
+                        'fusion_weights': {'alpha_i2t': 0.5, 'alpha_t2i': 0.5},
+                        'attention_entropy': torch.tensor(0.0, device=vision_feats.device),
+                        'cross_modal_similarity': torch.tensor(0.0, device=vision_feats.device)
                     }
+                else:
+                    logger.error(f"Layer {layer_idx}: Unexpected return format from cross_modal_layer")
+                    vision_cross, text_cross = vision_feats, text_feats
+                    attn_weights = {}
 
             except Exception as e:
                 logger.error(f"Layer {layer_idx}: Cross-modal attention failed: {e}")
-                # Fallback: use input features unchanged
                 vision_cross, text_cross = vision_feats, text_feats
-                attn_weights = {
-                    'text_self_attention': torch.zeros(1, 1, 1, 1, device=vision_feats.device),
-                    'image_to_text_attention': torch.zeros(1, 1, 1, 1, device=vision_feats.device),
-                    'text_to_image_attention': torch.zeros(1, 1, 1, 1, device=vision_feats.device),
-                    'alpha_i2t': torch.tensor(0.0, device=vision_feats.device),
-                    'alpha_t2i': torch.tensor(0.0, device=vision_feats.device)
-                }
+                attn_weights = {}
 
             # Store attention weights
             all_attention_weights[f'layer_{layer_idx}'] = attn_weights
@@ -390,7 +407,7 @@ class FIBERCrossModalFusion(nn.Module):
         similarity_matrix = self.compute_cross_modal_similarity(
             final_vision, final_text, text_mask
         )
-        
+
         result = {
             'vision_features': final_vision,
             'text_features': final_text,
@@ -398,10 +415,10 @@ class FIBERCrossModalFusion(nn.Module):
             'attention_weights': all_attention_weights,
             'similarity_temperature': self.similarity_temp.item()
         }
-        
+
         if return_intermediate:
             result['intermediate_features'] = intermediate_features
-            
+
         return result
 
 
