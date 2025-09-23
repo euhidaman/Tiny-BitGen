@@ -107,6 +107,13 @@ class CrossModalAttention(nn.Module):
         self.dropout = nn.Dropout(proj_drop)
         self.attn_drop = nn.Dropout(attn_drop)
 
+        # Add learnable fusion weights
+        self.alpha_i2t = nn.Parameter(torch.tensor(0.5))
+        self.alpha_t2i = nn.Parameter(torch.tensor(0.5))
+
+        # Fix: Add projection dropout as class attribute
+        self.proj_drop = nn.Dropout(proj_drop)
+
     def get_relative_pos_bias(self, seq_len: int) -> torch.Tensor:
         """Compute relative position bias for text sequence"""
         if not self.use_relative_pos:
